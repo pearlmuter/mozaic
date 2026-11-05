@@ -1,0 +1,25 @@
+[project]
+name = "mozaic"
+version = "0.1.0"
+description = "A local Mac image studio for Qwen Image 2.1 and MOSS-Image, with an MCP server for AI agents."
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "websockets>=13",
+    "pillow>=11",
+    "python-multipart>=0.0.12",
+    "mcp>=1.9",
+]
+
+[project.scripts]
+mozaic = "mozaic.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mozaic"]

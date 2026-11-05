@@ -1,0 +1,184 @@
+[
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/LICENSE",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/LICENSE",
+  "size": 11358,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/NOTICE",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/NOTICE",
+  "size": 930,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/config.json",
+  "size": 347,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/model_index.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/model_index.json",
+  "size": 455,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/scheduler/scheduler_config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/scheduler/scheduler_config.json",
+  "size": 494,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/text_encoder/config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/text_encoder/config.json",
+  "size": 2474,
+  "sha256": "",
+  "label": "Text encoder (Qwen3.5 9B)"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/text_encoder/model-00001-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/text_encoder/model-00001-of-00002.safetensors",
+  "size": 4249064728,
+  "sha256": "a471ed08fefe259aab5e3f7c24602759fe344cedfece4a10682066cbf43f97c9",
+  "label": "Text encoder (Qwen3.5 9B)"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/text_encoder/model-00002-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/text_encoder/model-00002-of-00002.safetensors",
+  "size": 4185299477,
+  "sha256": "5e3cbd59f2743435c9f0eaf00858102f6998f2c6d02bc38bef9078cfb49ef711",
+  "label": "Text encoder (Qwen3.5 9B)"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/text_encoder/model.safetensors.index.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/text_encoder/model.safetensors.index.json",
+  "size": 69862,
+  "sha256": "",
+  "label": "Text encoder (Qwen3.5 9B)"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/tokenizer/chat_template.jinja",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/tokenizer/chat_template.jinja",
+  "size": 7756,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/tokenizer/tokenizer.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/tokenizer/tokenizer.json",
+  "size": 19989325,
+  "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/tokenizer/tokenizer_config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/tokenizer/tokenizer_config.json",
+  "size": 1123,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/transformer/config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/transformer/config.json",
+  "size": 352,
+  "sha256": "",
+  "label": "SFT transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/transformer/model-00001-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/transformer/model-00001-of-00002.safetensors",
+  "size": 4291488455,
+  "sha256": "f010b8a8f18dfb8217f943c566bb1cba6a4f37bd3fe7a75da4fae479f619d10f",
+  "label": "SFT transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/transformer/model-00002-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/transformer/model-00002-of-00002.safetensors",
+  "size": 1201822635,
+  "sha256": "ade726e8d81139c634dd0b01054a4198127624bd4ebabaa936b5ce8802d59174",
+  "label": "SFT transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/transformer/model.safetensors.index.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/transformer/model.safetensors.index.json",
+  "size": 66602,
+  "sha256": "",
+  "label": "SFT transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/vae/config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/vae/config.json",
+  "size": 935,
+  "sha256": "",
+  "label": "VAE decoder"
+ },
+ {
+  "rel": "moss/MOSS-Image-SFT-MLX-8bit/vae/decoder.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-MLX-8bit/resolve/0ea450f1bcae3bada72f671135e7e28138ed5fa6/vae/decoder.safetensors",
+  "size": 111805440,
+  "sha256": "d6bbd213504840e9f29a280aacb42ba5bb5de9e3ec0a1ca4f7f66302e2c26ad5",
+  "label": "VAE decoder"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/LICENSE",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/LICENSE",
+  "size": 11358,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/NOTICE",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/NOTICE",
+  "size": 930,
+  "sha256": "",
+  "label": "Config"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/transformer/config.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/transformer/config.json",
+  "size": 352,
+  "sha256": "",
+  "label": "Base transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/transformer/model-00001-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/transformer/model-00001-of-00002.safetensors",
+  "size": 4291488455,
+  "sha256": "eeefad1f9ea90e52f0d84ba9d867044ab2afae05bc878a056dd36633dac6bebd",
+  "label": "Base transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/transformer/model-00002-of-00002.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/transformer/model-00002-of-00002.safetensors",
+  "size": 1201822635,
+  "sha256": "a4fdc714be66a351c5306095835b2c6f8309559c1c79129bdc457e79e4f5628e",
+  "label": "Base transformer"
+ },
+ {
+  "rel": "moss/MOSS-Image-Base-MLX-8bit/transformer/model.safetensors.index.json",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-Base-MLX-8bit/resolve/f06abf870b456dd7a57198473a445ccb6661c933/transformer/model.safetensors.index.json",
+  "size": 66602,
+  "sha256": "",
+  "label": "Base transformer"
+ },
+ {
+  "rel": "moss/turbo/turbo_student.safetensors",
+  "url": "https://huggingface.co/VisualInference/MOSS-Image-SFT-Turbo-MLX/resolve/4dd94eeb06457a12ad5ca8f3b2df5674d06378a7/turbo_student.safetensors",
+  "size": 594633272,
+  "sha256": "1859687695670d32cd3a2194c7bd931956d260e222d389fba8564f878e7f5a8d",
+  "label": "Turbo adapter"
+ },
+ {
+  "rel": "moss/turbo/moss_sft_destripe_top64_bf16.safetensors",
+  "url": "https://huggingface.co/nynxz/MOSS-Image/resolve/7b071d5915362f0101f0aa913315fd10a0772059/loras/moss_sft_destripe_top64_bf16.safetensors",
+  "size": 1900586,
+  "sha256": "fcd0d025f6a62dfe3171ab11fe9b3119eac735e22b94913c4efe45d8c69c2da9",
+  "label": "Destripe adapter"
+ }
+]
