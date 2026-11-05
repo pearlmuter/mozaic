@@ -13,6 +13,52 @@ let appSupport = FileManager.default.homeDirectoryForCurrentUser.appendingPathCo
 let runtimeDir = appSupport.appendingPathComponent("runtime")
 let logDir = appSupport.appendingPathComponent("logs")
 
+/// WKWebView ignores `-webkit-app-region`, so the page reports where the top bar's empty space is
+/// ("dragRegions", in page coordinates) and a mouse-down there moves the window.
+final class DraggableWebView: WKWebView {
+    var dragRegions: [NSRect] = []
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        // The page's y axis runs down from the top; WKWebView is flipped, so they already match.
+        if let window = window, dragRegions.contains(where: { $0.contains(p) }) {
+            if event.clickCount == 2 {
+                // Follow the system setting for double-clicking a title bar.
+                let pref = UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") ?? "Maximize"
+                if pref == "Minimize" { window.performMiniaturize(nil) } else if pref != "None" { window.performZoom(nil) }
+            } else {
+                window.performDrag(with: event)
+            }
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// Reports the top bar minus its controls, i.e. the areas the CSS calls `drag`.
+    static let dragScript = """
+    (() => {
+      let last = ''
+      const report = () => {
+        const bar = document.querySelector('.topbar')
+        let rects = []
+        if (bar) {
+          const b = bar.getBoundingClientRect()
+          // Slice the bar at each control, keeping the gaps and spacers.
+          const solid = [...bar.children].filter((c) => !c.classList.contains('spacer')).map((c) => c.getBoundingClientRect()).sort((a, c) => a.left - c.left)
+          let x = b.left
+          for (const r of solid) { if (r.left > x) rects.push([x, b.top, r.left - x, b.height]); x = Math.max(x, r.right) }
+          if (b.right > x) rects.push([x, b.top, b.right - x, b.height])
+        }
+        const key = JSON.stringify(rects)
+        if (key !== last) { last = key; window.webkit.messageHandlers.mozaic.postMessage({ action: 'dragRegions', rects }) }
+      }
+      new MutationObserver(report).observe(document.documentElement, { childList: true, subtree: true, attributes: true })
+      window.addEventListener('resize', report)
+      report()
+    })()
+    """
+}
+
 /// Runs the Mozaic server from a private Python environment that the app creates on first launch
 /// (and again after an update) from the backend source bundled in Resources/backend.
 final class Backend {
@@ -111,7 +157,7 @@ final class Backend {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler, NSWindowDelegate {
     var window: NSWindow!
-    var webView: WKWebView!
+    var webView: DraggableWebView!
     let backend = Backend()
     var attempts = 0
 
@@ -124,8 +170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
         let config = WKWebViewConfiguration()
         config.userContentController.add(self, name: "mozaic")
+        config.userContentController.addUserScript(WKUserScript(source: DraggableWebView.dragScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = DraggableWebView(frame: .zero, configuration: config)
         webView.uiDelegate = self
         webView.navigationDelegate = self
         webView.setValue(false, forKey: "drawsBackground")
@@ -218,6 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
             pb.clearContents()
             pb.setData(data, forType: .png)
             if let img = NSImage(data: data), let tiff = img.tiffRepresentation { pb.setData(tiff, forType: .tiff) }
+        case "dragRegions":
+            let rects = (body["rects"] as? [[Double]]) ?? []
+            webView.dragRegions = rects.filter { $0.count == 4 }.map { NSRect(x: $0[0], y: $0[1], width: $0[2], height: $0[3]) }
         case "openUrl":
             if let s = body["url"] as? String, let url = URL(string: s) { NSWorkspace.shared.open(url) }
         default:
