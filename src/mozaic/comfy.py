@@ -169,6 +169,11 @@ class ComfyEngine:
                 "--disable-auto-launch",
             ]
             env = dict(os.environ, PYTORCH_ENABLE_MPS_FALLBACK="1", PYTHONUNBUFFERED="1")
+            # PyTorch lets Metal grow to 1.7x the GPU's recommended working set, which on a Mac is more than the
+            # RAM, so a big job swaps for hours instead of failing. Capped below it, ComfyUI falls back to chunked
+            # attention and tiled decoding, and a job that still doesn't fit stops with an out-of-memory error.
+            env.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.85")
+            env.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.7")
             log_file = open(config.LOG_DIR / "comfyui.log", "ab")
             self._set_state("starting", "Starting Qwen Image 2.1")
             proc = self.proc = subprocess.Popen(args, cwd=comfy_dir, env=env, stdout=log_file,

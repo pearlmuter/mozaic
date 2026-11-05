@@ -1,9 +1,10 @@
-import { Brush, Expand, LayoutTemplate, Scissors, Shuffle, Sparkles, Wand2 } from 'lucide-react'
+import { Brush, Crop, Expand, LayoutTemplate, Scaling, Scissors, Shuffle, SlidersHorizontal, Sparkles, Wand2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { api, type Asset } from '../api'
 import { assetOf, useStore, type Tool } from '../store'
 import { fitCrop } from '../reframe'
 import { fromMossLayout } from './MossPanels'
+import { reuseAdjustments } from './Traditional'
 
 export const TOOL_NAMES: Record<Tool, string> = {
   create: 'Create',
@@ -13,6 +14,9 @@ export const TOOL_NAMES: Record<Tool, string> = {
   cutout: 'Cut out',
   remix: 'Remix',
   layout: 'Layout',
+  crop: 'Crop',
+  adjust: 'Adjust',
+  resize: 'Resize',
 }
 
 export const TOOL_ICONS: Record<Tool, (size: number) => ReactNode> = {
@@ -23,14 +27,18 @@ export const TOOL_ICONS: Record<Tool, (size: number) => ReactNode> = {
   cutout: (s) => <Scissors size={s} />,
   remix: (s) => <Shuffle size={s} />,
   layout: (s) => <LayoutTemplate size={s} />,
+  crop: (s) => <Crop size={s} />,
+  adjust: (s) => <SlidersHorizontal size={s} />,
+  resize: (s) => <Scaling size={s} />,
 }
 
-export const OP_TOOL: Record<string, Tool> = { generate: 'create', edit: 'edit', region: 'region', expand: 'expand', cutout: 'cutout', remix: 'remix' }
+export const OP_TOOL: Record<string, Tool> = { generate: 'create', edit: 'edit', region: 'region', expand: 'expand', cutout: 'cutout', remix: 'remix', adjust: 'adjust' }
 
 /** Loads an image's recorded parameters back into the matching tool. */
 export function reuseSettings(a: Asset) {
   const s = useStore.getState()
   const p = a.params || {}
+  if (a.op === 'adjust') return a.parents[0] ? reuseAdjustments(p, a.parents[0]) : undefined
   if (p.model === 'moss') {
     s.patch('moss', {
       prompt: p.layout ? s.moss.prompt : (p.prompt ?? ''),

@@ -65,13 +65,32 @@ It only generates images (no editing), but it renders long text in English and C
 
 SFT is the polished fine-tune; Base is the rawer, less curated pretrained model.
 
+### Traditional
+
+The third switch in the top bar, next to the two models. These are plain photo tools that need no
+model, so they work while the queue keeps generating.
+
+| Tool | What it's for |
+| --- | --- |
+| **Crop** | Aspect presets or a free crop by dragging the edges, straighten with a slider or a drawn level line, and rotate 90° or flip. Instant, at full resolution. |
+| **Adjust** | Exposure, contrast, highlights, shadows, whites, blacks; temperature, tint, vibrance, saturation, hue and black & white; clarity and sharpening; vignette and grain. A live histogram, **Auto** tone, and **Original** (or `\`) to compare. Double-click a slider to reset it. |
+| **Resize** | Scale by percent, to a long edge, or to an exact width and height. |
+
+Each tool saves a new image and keeps the original. An adjusted image remembers its settings: **Reuse
+these settings** opens the original in Adjust with them, ready to tweak.
+
 ### The queue
 
 Jobs run one at a time. While one is running, the Generate button becomes **Add to queue**, so you can
 line up more images and edits while you wait, and the viewer stays on the job that's running. The
 **Queue** button in the top bar shows what's running, everything waiting in order, and recent
-results, with a cancel button on each job. Jobs queued by an AI agent wait in the same queue and are
-marked **Agent**. Crops and straightens skip the queue: they're instant.
+results. Drag waiting jobs to change their order. **Pause** holds a waiting job until you resume it.
+Pausing the running job stops it and puts it back first in line: it keeps the images it finished, and
+the one in progress starts over. Each job shows an estimate of how long it takes and when it starts,
+learned from how long past jobs took on this Mac. Jobs that were waiting when Mozaic quit come back
+paused. Switching models while a job runs waits for it to finish, since only one model is loaded at a
+time. Jobs queued by an AI agent wait in the same queue and are marked **Agent**. Crops and
+straightens skip the queue: they're instant.
 
 ### And also
 
@@ -90,14 +109,24 @@ and LoRA support (anything in `models/loras`).
 
 On an M1 Max (64 GB):
 
-- **Qwen Image 2.1** (int8): about 10 s per step for a 0.5 MP image and about 15 s per step for edits,
-  plus roughly a minute to load the model for the first job. A 512×512 image at 12 steps takes about
-  75 seconds.
+- **Qwen Image 2.1** (int8), measured per sampling step, plus roughly a minute to load the model for the
+  first job:
+
+  | Job | Per step | 45 steps | Memory (ComfyUI) |
+  | --- | --- | --- | --- |
+  | Generate, 1 MP | 18 s | about 14 min | 18 GB |
+  | Generate, 4.2 MP (2752×1536) | 101 s | about 1¼ h | 24 GB |
+  | Cut out or edit a 3.4 MP photo | 133 s | about 1¾ h | 41 GB |
+
+  Edits cost more than their size suggests because the model also attends over the input image. For a
+  quick result, pick a smaller **Output size** or fewer steps.
 - **MOSS-Image**: a 1 MP image takes about 2½ minutes with Turbo and 12–15 minutes at the official
   50 steps.
 
-When other apps fill the memory, macOS swaps the model out and steps can take minutes. **Settings ›
-Free memory** unloads the models between sessions.
+Mozaic caps how much memory the GPU side may use below the Mac's RAM, and keeps an edit's cached
+reference image in ordinary RAM (int8 above 2 MP), so a large job runs without swapping. A job too big
+for the Mac stops with an out-of-memory message instead of grinding for hours. When other apps fill the
+memory, steps still slow down; **Settings › Free memory** unloads the models between sessions.
 
 ## Use it from an AI agent (MCP)
 
@@ -116,7 +145,7 @@ claude mcp add mozaic -- "$HOME/Library/Application Support/Mozaic/runtime/venv/
 
 **Tools:** `generate_image` (with `model`: `qwen` or `moss`), `generate_layout` (MOSS), `edit_image`,
 `edit_region`, `expand_image` (also crops and straightens), `remove_background`, `remix_image`,
-`list_jobs`, `wait_for_jobs`, `get_job`, `cancel_job`, `list_images`, `get_image`, `import_image`,
+`list_jobs`, `wait_for_jobs`, `get_job`, `cancel_job`, `pause_job`, `resume_job`, `move_job`, `list_images`, `get_image`, `import_image`,
 `set_favorite` and `mozaic_status`, plus a `mozaic://guide` resource with prompting tips.
 
 Image arguments take a library id, an absolute path, a URL or a data URI. Tools wait for the result,
@@ -127,7 +156,8 @@ sending progress notifications, and return file paths plus small previews.
 An agent can queue many jobs at once by calling the tools with `wait: false`. Each call returns a job
 id and its place in the queue straight away. `wait_for_jobs` then returns as soon as the next job
 finishes, with its images, so the agent can review each result and queue fixes while the rest keep
-running. `list_jobs` shows the queue, and `cancel_job` removes one job from it.
+running. `list_jobs` shows the queue with time estimates, `cancel_job` removes one job from it,
+`pause_job` and `resume_job` hold a job and let it go again, and `move_job` changes its place in line.
 
 Over stdio, Mozaic can also tell an idle Claude Code session when a job it queued has finished, using
 Claude Code's [channels](https://code.claude.com/docs/en/channels) (a research preview). Start Claude
@@ -182,11 +212,12 @@ checks the MCP endpoint.
   - `moss.py` and `moss_worker.py`: the MOSS engine and model switching.
   - `graphs.py`: the Qwen 2.1 workflows, built from ComfyUI core nodes.
   - `jobs.py`: the queue and operations.
+  - `estimate.py`: queue time estimates, calibrated from past jobs.
   - `library.py`: the image library.
   - `imaging.py`: masks, outlines, cropping, straightening and compositing.
   - `server.py`: the HTTP API and events.
   - `mcp_server.py`: the MCP server.
-- `web/`: the React UI.
+- `web/`: the React UI. `web/src/develop.ts` is the WebGL shader behind Traditional › Adjust.
 - `macos/main.swift`: the native window.
 - `scripts/`: build, icon and MCP smoke-test scripts.
 

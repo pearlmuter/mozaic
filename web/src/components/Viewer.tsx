@@ -8,6 +8,7 @@ import { useStore, type Tool } from '../store'
 import { clearMask, fillShape, invertMask, maskCanvas, snapshot, strokeDone, strokeLine, undo } from './maskState'
 import { reuseSettings, straighten, TOOL_ICONS, TOOL_NAMES } from './actions'
 import { LayoutCanvas } from './LayoutCanvas'
+import { AdjustCanvas } from './Traditional'
 
 type Pt = { x: number; y: number }
 
@@ -19,6 +20,8 @@ export function Viewer() {
   const tool = useStore((s) => s.tool)
   const region = useStore((s) => s.region)
   const expand = useStore((s) => s.expand)
+  const adjustImage = useStore((s) => s.adjust.image)
+  const workspace = useStore((s) => s.workspace)
   const compare = useStore((s) => s.compare)
   const layoutView = useStore((s) => s.layoutView)
   const assetMap = useStore((s) => s.assetMap)
@@ -33,7 +36,9 @@ export function Viewer() {
   const parent = asset?.parents[0] ? assetMap[asset.parents[0]] : undefined
 
   const painting = tool === 'region' && !showLive && !!asset && region.image === asset.id
-  const expanding = tool === 'expand' && !showLive && !!asset && expand.image === asset.id
+  const cropping = tool === 'crop' && workspace === 'traditional'
+  const expanding = (tool === 'expand' || cropping) && !showLive && !!asset && expand.image === asset.id
+  const adjusting = tool === 'adjust' && workspace === 'traditional' && !showLive && !!asset && adjustImage === asset.id
 
   const [natural, setNatural] = useState<{ w: number; h: number }>({ w: 1024, h: 1024 })
   const [view, setView] = useState({ s: 1, x: 0, y: 0 })
@@ -186,7 +191,8 @@ export function Viewer() {
       const raw = (d.value ?? 0) + sign * delta
       // Growing snaps to 16 px for the model; cropping follows the pointer.
       const opposite = { left: expand.right, right: expand.left, top: expand.bottom, bottom: expand.top }[d.side as 'left' | 'right' | 'top' | 'bottom']
-      const value = Math.max(64 - (across ? W : H) - opposite, raw > 0 ? Math.round(raw / 16) * 16 : Math.round(raw))
+      // Growing snaps to 16 px for the model; Crop only ever cuts in.
+      const value = Math.max(64 - (across ? W : H) - opposite, cropping ? Math.min(0, Math.round(raw)) : raw > 0 ? Math.round(raw / 16) * 16 : Math.round(raw))
       const next = { ...expand, [d.side]: value }
       patch('expand', { [d.side]: value, ratio: (W + next.left + next.right) / (H + next.top + next.bottom) })
     } else if (d.kind === 'split') {
@@ -245,7 +251,7 @@ export function Viewer() {
   const src = showLive ? (previewSrc ?? (liveInput ? fileUrl(liveInput.id) : undefined)) : asset ? fileUrl(asset.id) : undefined
   // Qwen's live preview is one colour per 16×16 block; soften it so it reads as a draft rather than noise.
   const previewBlur = previewSrc && natural.w ? Math.min(12, (W / natural.w) * 0.45) : 0
-  const showCompare = compare && !!parent && !showLive && !painting && !expanding
+  const showCompare = compare && !!parent && !showLive && !painting && !expanding && !adjusting
 
   if (tool === 'layout' && !showLive && layoutView === 'edit') return <LayoutCanvas />
 
@@ -275,7 +281,9 @@ export function Viewer() {
           {showCompare && parent && (
             <img src={fileUrl(parent.id)} style={{ width: W, height: H, objectFit: 'fill', clipPath: `inset(0 ${(1 - split) * 100}% 0 0)` }} draggable={false} alt="" />
           )}
-          {src ? (
+          {adjusting ? (
+            <AdjustCanvas id={asset!.id} w={W} h={H} />
+          ) : src ? (
             <img
               key={src.length > 200 ? 'live' : src}
               src={src}
@@ -480,36 +488,53 @@ function ImageToolbar({ tool }: { tool: Tool }) {
   const toast = useStore((s) => s.toast)
   const region = useStore((s) => s.region)
   const expand = useStore((s) => s.expand)
+  const adjust = useStore((s) => s.adjust)
+  const resize = useStore((s) => s.resize)
+  const workspace = useStore((s) => s.workspace)
+  const setWorkspace = useStore((s) => s.setWorkspace)
   const newImage = useStore((s) => s.newImage)
   if (!a) return null
   const parent = a.parents[0]
-  const target = tool === 'region' ? region.image : tool === 'expand' ? expand.image : null
+  const target = tool === 'region' ? region.image : tool === 'expand' || tool === 'crop' ? expand.image : tool === 'adjust' ? adjust.image : tool === 'resize' ? resize.image : null
+  const onThis: Partial<Record<Tool, [string, string]>> = {
+    region: ['Paint on this', 'Paint on this image'],
+    expand: ['Expand this', 'Expand this image'],
+    crop: ['Crop this', 'Crop this image'],
+    adjust: ['Adjust this', 'Adjust this image'],
+    resize: ['Resize this', 'Resize this image'],
+  }
+  const tools: Tool[] = workspace === 'traditional' ? ['crop', 'adjust', 'resize'] : activeModel === 'qwen' ? ['edit', 'region', 'expand', 'cutout', 'remix'] : []
   return (
     <div className="stage-toolbar" onPointerDown={(e) => e.stopPropagation()}>
       <button className="btn sm ghost" title="Clear the canvas for a new image (⌘N)" onClick={newImage}>
         <ImagePlus size={14} /> New image
       </button>
       <span className="divider" />
-      {(tool === 'region' || tool === 'expand') && target !== a.id && (
+      {onThis[tool] && target !== a.id && (
         <>
-          <button className="btn sm on" onClick={() => useImage(tool, a.id)} title={tool === 'region' ? 'Paint on this image' : 'Expand this image'}>
-            <ImageUp size={14} /> {tool === 'region' ? 'Paint on this' : 'Expand this'}
+          <button className="btn sm on" onClick={() => useImage(tool, a.id)} title={onThis[tool]![1]}>
+            <ImageUp size={14} /> {onThis[tool]![0]}
           </button>
           <span className="divider" />
         </>
       )}
-      {(activeModel === 'qwen' ? (['edit', 'region', 'expand', 'cutout', 'remix'] as Tool[]) : []).map((t) => (
+      {tools.map((t) => (
         <button key={t} className="btn sm ghost" title={`Use in ${TOOL_NAMES[t]}`} onClick={() => useImage(t, a.id)}>
           {TOOL_ICONS[t](14)} {TOOL_NAMES[t]}
         </button>
       ))}
+      {workspace !== 'traditional' && (
+        <button className="btn sm ghost" title="Crop, adjust or resize this image with the traditional tools" onClick={() => (setWorkspace('traditional'), useImage('adjust', a.id))}>
+          {TOOL_ICONS.adjust(14)} Adjust
+        </button>
+      )}
       <span className="divider" />
       {parent && (
         <button className={`btn sm icon ${compare ? 'on' : 'ghost'}`} title="Compare with the input (C)" onClick={() => set({ compare: !compare })}>
           <Columns2 size={15} />
         </button>
       )}
-      {a.op !== 'import' && (
+      {a.op !== 'import' && a.op !== 'transform' && (
         <button className="btn sm icon ghost" title="Reuse these settings" onClick={() => reuseSettings(a)}>
           <History size={15} />
         </button>

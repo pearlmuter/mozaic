@@ -165,3 +165,35 @@ def composite(original: Image.Image, result: Image.Image, mask: Image.Image, fea
     m = feather(mask.convert("L").resize(size), feather_px)
     return Image.composite(top, base, m)
 
+
+
+def transform(img: Image.Image, rotate: int = 0, flip: str = "", width: int = 0, height: int = 0) -> tuple[Image.Image, str]:
+    """Rotates by quarter turns (degrees clockwise), flips ("h" or "v") and resizes. Returns the image and a
+    short description of what was done."""
+    if rotate % 90:
+        raise ValueError("Rotate by 90, 180 or 270 degrees; use Crop › Straighten for small angles")
+    if flip not in ("", "h", "v"):
+        raise ValueError("flip must be h or v")
+    done = []
+    turns = (rotate // 90) % 4
+    if turns:
+        img = img.transpose({1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180,
+                             3: Image.Transpose.ROTATE_90}[turns])
+        done.append({1: "Rotate right", 2: "Rotate 180°", 3: "Rotate left"}[turns])
+    if flip:
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT if flip == "h" else Image.Transpose.FLIP_TOP_BOTTOM)
+        done.append("Flip horizontal" if flip == "h" else "Flip vertical")
+    if width or height:
+        w, h = img.size
+        width = width or round(w * height / h)
+        height = height or round(h * width / w)
+        if not (8 <= width <= 16384 and 8 <= height <= 16384):
+            raise ValueError("Sizes go from 8 to 16384 pixels")
+        if (width, height) != img.size:
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+            img = img.resize((width, height), Image.Resampling.LANCZOS, reducing_gap=3.0)
+            done.append(f"Resize to {width}×{height}")
+    if not done:
+        raise ValueError("Nothing to change")
+    return img, ", ".join(done)

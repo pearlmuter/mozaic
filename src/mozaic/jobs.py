@@ -14,7 +14,7 @@ from typing import Any
 
 from PIL import Image
 
-from . import config, graphs, imaging, installer, library
+from . import config, estimate, graphs, imaging, installer, library
 from .comfy import ComfyError, Interrupted, engine
 from .moss import engines, moss_engine
 
@@ -30,7 +30,7 @@ class Job:
     id: str
     op: str
     params: dict
-    status: str = "queued"  # queued | running | done | error | cancelled
+    status: str = "queued"  # queued | paused | running | done | error | cancelled
     progress: float = 0.0
     phase: str = "Waiting"
     error: str | None = None
@@ -47,15 +47,36 @@ class Job:
     prompt_id: str | None = None
     moss_id: str | None = None
     cancel_requested: bool = False
+    pause_requested: bool = False
+    completed: int = 0  # images finished; a paused job resumes with the next one
+    run_time: float = 0.0  # seconds spent running before the last pause
+    position: int | None = None  # place among the waiting jobs, 0 = next
+    image_started_at: float | None = None
+    step_clock: tuple[int, float] | None = None  # (step, time) when the current image's sampling was first seen
     done_event: asyncio.Event = field(default_factory=asyncio.Event)
 
+    @property
+    def stopping(self) -> bool:
+        return self.cancel_requested or self.pause_requested
+
+    def images(self):
+        """Indexes of the images still to make, stopping early when the job is cancelled or paused."""
+        for i in range(self.completed, self.count):
+            if self.stopping:
+                return
+            yield i
+            self.completed = i + 1
+
     def public(self) -> dict:
+        eta = estimate.remaining(self) if self.status in ("queued", "paused", "running") else None
         return {
             "id": self.id, "op": self.op, "params": self.params, "status": self.status,
             "progress": round(self.progress, 4), "phase": self.phase, "error": self.error,
             "outputs": self.outputs, "text": self.text, "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at, "step": self.step,
             "steps": self.steps, "index": self.index, "count": self.count, "source": self.source,
+            "completed": self.completed, "position": self.position,
+            "eta": None if eta is None else round(eta),
         }
 
     def record(self) -> dict:
@@ -90,8 +111,10 @@ class JobQueue:
     def __init__(self) -> None:
         self.jobs: dict[str, Job] = {}
         self.order: list[str] = []
-        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.waiting: list[str] = []  # queued and paused jobs, in the order they will run
+        self._wake = asyncio.Event()
         self.worker: asyncio.Task | None = None
+        self.switch_after: str | None = None  # a model switch asked for while a job on the other model ran
         self._uploaded: dict[str, str] = {}
         self._last_preview = 0.0
 
@@ -124,10 +147,28 @@ class JobQueue:
                 log.exception("crop %s failed", job.id)
                 self._finish(job, "error", str(e) or e.__class__.__name__)
             return job
-        self.queue.put_nowait(job.id)
+        self.waiting.append(job.id)
+        self._renumber()
         self._changed(job)
+        self._wake.set()
         self.start()
         return job
+
+    def restore(self) -> None:
+        """Jobs that were waiting or running when Mozaic last quit come back paused, in their old order."""
+        for d in library.unfinished_jobs():
+            if d["id"] in self.jobs:
+                continue
+            p = d["params"] or {}
+            job = Job(id=d["id"], op=d["op"], params=p, status="paused", phase="Paused", outputs=d["outputs"],
+                      created_at=d["created_at"], count=int(p.get("count", 1)), source=d.get("source") or "app")
+            job.completed = job.index = min(job.count, len(job.outputs))
+            job.progress = job.completed / max(1, job.count)
+            self.jobs[job.id] = job
+            self.order.append(job.id)
+            self.waiting.append(job.id)
+            library.save_job(job.record())
+        self._renumber()
 
     def get(self, jid: str) -> dict | None:
         if jid in self.jobs:
@@ -139,16 +180,54 @@ class JobQueue:
 
     async def cancel(self, jid: str) -> bool:
         job = self.jobs.get(jid)
-        if not job or job.status not in ("queued", "running"):
+        if not job or job.status not in ("queued", "paused", "running"):
             return False
         job.cancel_requested = True
-        if job.status == "queued":
+        if job.status in ("queued", "paused"):
             self._finish(job, "cancelled")
-        elif job.moss_id:
+        else:
+            await self._interrupt(job)
+        return True
+
+    async def pause(self, jid: str) -> bool:
+        """A waiting job is held until resumed. A running one stops now and goes back first in line, keeping
+        the images it finished; the image it was on starts over when it resumes."""
+        job = self.jobs.get(jid)
+        if not job or job.status not in ("queued", "running") or job.stopping:
+            return False
+        if job.status == "queued":
+            job.status, job.phase = "paused", "Paused"
+            library.save_job(job.record())
+            self._changed(job)
+        else:
+            job.pause_requested = True
+            job.phase = "Pausing"
+            self._changed(job)
+            await self._interrupt(job)
+        return True
+
+    def resume(self, jid: str) -> bool:
+        job = self.jobs.get(jid)
+        if not job or job.status != "paused":
+            return False
+        job.status, job.phase = "queued", "Waiting"
+        library.save_job(job.record())
+        self._changed(job)
+        self._wake.set()
+        return True
+
+    def reorder(self, ids: list[str]) -> list[str]:
+        """Puts the waiting jobs in the given order; waiting jobs left out keep their order after them."""
+        known = [j for j in dict.fromkeys(ids) if j in self.waiting]
+        self.waiting = known + [j for j in self.waiting if j not in known]
+        self._renumber(publish=True)
+        return list(self.waiting)
+
+    async def _interrupt(self, job: Job) -> None:
+        if job.moss_id:
             moss_engine.cancel(job.moss_id)
         elif job.prompt_id:
             await engine.interrupt(job.prompt_id)
-        return True
 
     async def wait(self, jid: str, timeout: float) -> dict | None:
         job = self.jobs.get(jid)
@@ -160,6 +239,29 @@ class JobQueue:
             pass
         return job.public()
 
+    def running_model(self) -> str | None:
+        return next((job_model(j) for j in self.jobs.values() if j.status == "running"), None)
+
+    def request_switch(self, model: str) -> bool:
+        """Switching models stops the other engine, which would kill a running job. Returns True when the
+        switch has to wait for the running job, and remembers it for then."""
+        running = self.running_model()
+        if running is None or running == model:
+            self.switch_after = None
+            return False
+        self.switch_after = model
+        return True
+
+    async def _apply_switch(self) -> None:
+        model, self.switch_after = self.switch_after, None
+        nxt = self._next()
+        # The next job switches to its own model anyway; only switch now if it would want this one too.
+        if model and (nxt is None or job_model(nxt) == model):
+            try:
+                await engines.use(model)
+            except Exception:
+                log.exception("switching to %s failed", model)
+
     def pending(self) -> int:
         return sum(1 for j in self.jobs.values() if j.status in ("queued", "running"))
 
@@ -168,11 +270,22 @@ class JobQueue:
     def _changed(self, job: Job) -> None:
         bus.publish({"type": "job", "job": job.public()})
 
+    def _renumber(self, publish: bool = False) -> None:
+        for i, jid in enumerate(self.waiting):
+            job = self.jobs[jid]
+            moved = job.position != i
+            job.position = i
+            if publish and moved:
+                library.save_job(job.record())
+                self._changed(job)
+
     def _finish(self, job: Job, status: str, error: str | None = None) -> None:
         job.status, job.error = status, error
         job.finished_at = time.time()
+        job.position = None
         if status == "done":
             job.progress, job.phase = 1.0, "Done"
+            estimate.invalidate()
         elif status == "cancelled":
             job.phase = "Cancelled"
         else:
@@ -180,14 +293,53 @@ class JobQueue:
         library.save_job(job.record())
         job.done_event.set()
         self._changed(job)
+        if job.id in self.waiting:
+            self.waiting.remove(job.id)
+            self._renumber(publish=True)
+
+    def _paused(self, job: Job) -> None:
+        """Puts a job that was stopped by pause() back at the front of the queue."""
+        job.status, job.phase, job.pause_requested = "paused", "Paused", False
+        job.run_time = time.time() - (job.started_at or time.time())
+        job.prompt_id = job.moss_id = None
+        job.step = 0
+        job.index = job.completed
+        job.progress = job.completed / max(1, job.count)
+        self.waiting.insert(0, job.id)
+        self._renumber(publish=True)
+        library.save_job(job.record())
+        self._changed(job)
+
+    def _settle(self, job: Job, error: Exception | None = None) -> None:
+        if job.cancel_requested:
+            self._finish(job, "cancelled")
+        elif job.pause_requested:
+            self._paused(job)
+        elif error is not None:
+            msg = str(error) or error.__class__.__name__
+            if "out of memory" in msg.lower():
+                msg = ("Not enough memory for this size. Try a smaller output size or fewer reference images, "
+                       "or close other apps. (" + msg.split(".")[0].strip() + ")")
+            self._finish(job, "error", msg)
+        else:
+            self._finish(job, "done")
+
+    def _next(self) -> Job | None:
+        return next((self.jobs[j] for j in self.waiting if self.jobs[j].status == "queued"), None)
 
     async def _work(self) -> None:
         while True:
-            jid = await self.queue.get()
-            job = self.jobs.get(jid)
-            if not job or job.status != "queued":
+            job = self._next()
+            if job is None:
+                self._wake.clear()
+                await self._wake.wait()
                 continue
-            job.status, job.started_at, job.phase = "running", time.time(), "Starting engine"
+            self.waiting.remove(job.id)
+            job.position = None
+            self._renumber(publish=True)
+            job.status, job.phase = "running", "Starting engine"
+            # Time spent paused doesn't count, so finished - started stays the job's real running time.
+            job.started_at = time.time() - job.run_time
             self._changed(job)
             try:
                 model = job_model(job)
@@ -197,15 +349,18 @@ class JobQueue:
                     await engines.use(model, start=False)
                 await engines.get(model).ensure_ready()
                 await (run_moss_generate if model == "moss" else RUNNERS[job.op])(self, job)
-                if job.cancel_requested:
-                    self._finish(job, "cancelled")
-                else:
-                    self._finish(job, "done")
+                self._settle(job)
             except Interrupted:
-                self._finish(job, "cancelled")
+                if job.pause_requested and not job.cancel_requested:
+                    self._paused(job)
+                else:
+                    self._finish(job, "cancelled")
             except Exception as e:
-                log.exception("job %s failed", job.id)
-                self._finish(job, "cancelled" if job.cancel_requested else "error", str(e) or e.__class__.__name__)
+                if not job.stopping:
+                    log.exception("job %s failed", job.id)
+                self._settle(job, e)
+            if self.switch_after:
+                await self._apply_switch()
 
     async def upload(self, aid: str) -> tuple[str, bool]:
         a = library.get(aid)
@@ -222,7 +377,7 @@ class JobQueue:
         return await engine.upload_image(imaging.png_bytes(img), name), alpha
 
     async def run_graph(self, job: Job, graph: dict, index: int) -> dict:
-        job.index, job.step = index, 0
+        job.index, job.step, job.step_clock, job.image_started_at = index, 0, None, time.time()
         job.steps = int(job.params.get("steps", 0))
         job.phase = "Queued in engine"
         self._changed(job)
@@ -231,7 +386,7 @@ class JobQueue:
             t, d = msg["type"], msg.get("data", {})
             if t == "queued":
                 job.prompt_id = d["prompt_id"]
-                if job.cancel_requested:
+                if job.stopping:
                     await engine.interrupt(job.prompt_id)
             elif t == "execution_start":
                 job.phase = "Preparing"
@@ -242,6 +397,7 @@ class JobQueue:
                 ct = graph.get(str(d.get("node")), {}).get("class_type", "")
                 if ct == "KSampler":
                     job.step, job.steps = int(d["value"]), int(d["max"])
+                    job.step_clock = job.step_clock or (job.step, time.time())
                     job.phase = "Generating"
             elif t == "preview":
                 now = time.time()
@@ -415,6 +571,20 @@ async def model_set(loras: list[dict] | None = None) -> graphs.ModelSet:
     )
 
 
+def kv_cache(m: graphs.ModelSet, images: int, side: int) -> None:
+    """Mozaic's "auto" for the edit KV cache, sized for `images` reference images at `side`² pixels.
+
+    ComfyUI's own auto keeps the cache in GPU memory whenever the Mac reports free memory, but on unified
+    memory that is the same RAM, inside Metal's capped pool, and big edits ran out of it or into swap.
+    Kept in RAM it stays outside the pool at little cost in speed; int8 halves it once the references are big.
+    """
+    if m.cache_device != "auto":
+        return
+    m.cache_device = "cpu"
+    if m.cache_dtype == "default" and images * side * side >= 2 * 1024 * 1024:
+        m.cache_dtype = "int8"
+
+
 def _match_resolution(w: int, h: int, requested: Any) -> int:
     """Edit resolution budget. 'match' (default) keeps the input size, capped at 2048x2048."""
     if requested in (None, "", "match"):
@@ -437,9 +607,7 @@ async def run_generate(q: JobQueue, job: Job) -> None:
     p = job.params
     prompt = transparent_prompt(p["prompt"]) if p["transparent"] else p["prompt"]
     m = await model_set(p["loras"])
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         g = graphs.text_to_image(m, _sampling(p, seed), prompt, p["negative_prompt"], p["width"], p["height"])
         for img in await q.images_from(await q.run_graph(job, g, i)):
@@ -455,10 +623,9 @@ async def run_edit(q: JobQueue, job: Job) -> None:
     uploads = [await q.upload(a) for a in p["images"]]
     first = library.get(p["images"][0])
     res = _match_resolution(first["width"], first["height"], p.get("resolution"))
+    kv_cache(m, len(uploads), res)
     size = (int(p["width"]), int(p["height"])) if p.get("width") and p.get("height") else None
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         g = graphs.edit(m, _sampling(p, seed), prompt, p["negative_prompt"], uploads, res, size)
         for img in await q.images_from(await q.run_graph(job, g, i)):
@@ -496,10 +663,9 @@ async def run_region(q: JobQueue, job: Job) -> None:
         target = await q.upload(p["image"])
         prompt = instruction
         keep_mask = imaging.grow(mask, p["grow"])
+    kv_cache(m, 1 + len(refs), res)
 
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         if method == "repaint":
             mname, _ = await q.upload_image(imaging.mask_reference(imaging.grow(mask, p["grow"])),
@@ -533,10 +699,9 @@ async def run_expand(q: JobQueue, job: Job) -> None:
               f"perspective, lighting and style, so the result looks like one seamless photo. Keep the existing "
               f"content unchanged.{' ' + extra + '.' if extra else ''}")
     res = _match_resolution(padded.width, padded.height, p.get("resolution"))
+    kv_cache(m, 1, res)
     keep = imaging.grow(new_area, p["feather"])
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         g = graphs.edit(m, _sampling(p, seed), prompt, p["negative_prompt"], [target], res)
         for img in await q.images_from(await q.run_graph(job, g, i)):
@@ -557,9 +722,8 @@ async def run_cutout(q: JobQueue, job: Job) -> None:
     target = await q.upload(p["image"])
     a = library.get(p["image"])
     res = _match_resolution(a["width"], a["height"], p.get("resolution"))
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    kv_cache(m, 1, res)
+    for i in job.images():
         seed = p["seed"] + i
         g = graphs.edit(m, _sampling(p, seed), prompt, p["negative_prompt"], [target], res)
         for img in await q.images_from(await q.run_graph(job, g, i)):
@@ -578,10 +742,10 @@ async def run_remix(q: JobQueue, job: Job) -> None:
         f = MAX_SIDE / max(w, h)
         w, h = w * f, h * f
     target = await q.upload(p["image"])
+    if p["use_reference"]:
+        kv_cache(m, 1, int(math.sqrt(w * h)))
     prompt = (p.get("prompt") or "").strip() or "High quality, sharp, detailed image."
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         g = graphs.remix(m, _sampling(p, seed, p["strength"]), prompt, p["negative_prompt"], target, int(w), int(h),
                          bool(p["use_reference"]))
@@ -700,11 +864,10 @@ async def run_moss_generate(q: JobQueue, job: Job) -> None:
     p = job.params
     cfg = moss_config(p)
     out_dir = config.APP_SUPPORT / "moss-out"
-    for i in range(job.count):
-        if job.cancel_requested:
-            return
+    for i in job.images():
         seed = p["seed"] + i
         job.index, job.step, job.steps = i, 0, (15 if p["turbo"] else p["steps"])
+        job.step_clock, job.image_started_at = None, time.time()
         job.phase = "Queued in engine"
         q._changed(job)
 
@@ -713,6 +876,7 @@ async def run_moss_generate(q: JobQueue, job: Job) -> None:
                 job.phase = msg["phase"]
             elif msg["type"] == "progress":
                 job.step, job.steps = msg["step"], msg["total"]
+                job.step_clock = job.step_clock or (job.step, time.time())
                 job.phase = "Generating"
             frac = job.step / job.steps if job.steps else 0.0
             job.progress = min(0.99, (i + frac * 0.95) / max(1, job.count))
@@ -726,7 +890,7 @@ async def run_moss_generate(q: JobQueue, job: Job) -> None:
         task = asyncio.create_task(moss_engine.run(cfg, request, out, on_event, ref))
         while not task.done():
             job.moss_id = ref.get("moss_id")
-            if job.cancel_requested and job.moss_id:
+            if job.stopping and job.moss_id:
                 moss_engine.cancel(job.moss_id)
             await asyncio.sleep(0.2)
         await task

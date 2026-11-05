@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS assets (
     name TEXT,
     width INTEGER, height INTEGER,
     has_alpha INTEGER DEFAULT 0,
-    source TEXT,            -- generated | imported
-    op TEXT,                -- generate | edit | region | expand | cutout | remix | import
+    source TEXT,            -- generated | edited | imported
+    op TEXT,                -- generate | edit | region | expand | cutout | remix | adjust | transform | import
     prompt TEXT,
     params TEXT,            -- JSON of the job params that produced it
     parents TEXT,           -- JSON list of asset ids used as inputs
@@ -53,6 +53,11 @@ def db() -> sqlite3.Connection:
         _conn = sqlite3.connect(config.DB_FILE, check_same_thread=False)
         _conn.row_factory = sqlite3.Row
         _conn.executescript(SCHEMA)
+        # Columns added after the first release.
+        cols = {r[1] for r in _conn.execute("PRAGMA table_info(jobs)")}
+        for col, kind in (("source", "TEXT"), ("position", "INTEGER")):
+            if col not in cols:
+                _conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {kind}")
         _conn.commit()
     return _conn
 
@@ -200,11 +205,11 @@ def trash(aid: str) -> bool:
 def save_job(job: dict) -> None:
     with _lock:
         db().execute(
-            "INSERT OR REPLACE INTO jobs (id, op, params, status, error, outputs, text, created_at, started_at, finished_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO jobs (id, op, params, status, error, outputs, text, created_at, started_at,"
+            " finished_at, source, position) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (job["id"], job["op"], json.dumps(job["params"]), job["status"], job.get("error"),
              json.dumps(job.get("outputs", [])), job.get("text"), job["created_at"], job.get("started_at"),
-             job.get("finished_at")))
+             job.get("finished_at"), job.get("source"), job.get("position")))
         db().commit()
 
 
@@ -216,6 +221,13 @@ def load_job(jid: str) -> dict | None:
     d["params"] = json.loads(d["params"] or "{}")
     d["outputs"] = json.loads(d["outputs"] or "[]")
     return d
+
+
+def unfinished_jobs() -> list[dict]:
+    """Jobs still queued, paused or running, in their queue order."""
+    rows = db().execute("SELECT id FROM jobs WHERE status IN ('queued', 'paused', 'running')"
+                        " ORDER BY status != 'running', position IS NULL, position, created_at").fetchall()
+    return [load_job(r["id"]) for r in rows]
 
 
 def recent_jobs(limit: int = 50) -> list[dict]:

@@ -7,6 +7,7 @@ import { api } from '../api'
 import { covered, fitCrop } from '../reframe'
 import { straighten } from './actions'
 import { canRunMoss, LayoutPanel, MossCreatePanel, runMoss } from './MossPanels'
+import { AdjustPanel, canRunTraditional, CropPanel, ResizePanel, runTraditional, TRADITIONAL_LABEL } from './Traditional'
 
 const ASPECTS = ['1:1', '4:3', '3:4', '3:2', '2:3', '16:9', '9:16', 'custom']
 const MP = [
@@ -473,10 +474,11 @@ function RemixPanel() {
   )
 }
 
-const LABEL: Record<Tool, string> = { create: 'Generate', edit: 'Apply edit', region: 'Change region', expand: 'Expand', cutout: 'Cut out', remix: 'Remix', layout: 'Generate layout' }
+const LABEL: Partial<Record<Tool, string>> = { create: 'Generate', edit: 'Apply edit', region: 'Change region', expand: 'Expand', cutout: 'Cut out', remix: 'Remix', layout: 'Generate layout' }
 
 export async function runTool(tool: Tool) {
   const s = useStore.getState()
+  if (s.workspace === 'traditional') return runTraditional(tool)
   if (s.activeModel === 'moss') return runMoss(tool)
   if (tool === 'create') {
     const f = s.create
@@ -508,6 +510,7 @@ export async function runTool(tool: Tool) {
 
 function canRun(tool: Tool): string | null {
   const s = useStore.getState()
+  if (s.workspace === 'traditional') return canRunTraditional(tool)
   if (s.activeModel === 'moss') return canRunMoss(tool)
   if (tool === 'create') return s.create.prompt.trim() ? null : 'Write a prompt'
   if (tool === 'edit') return !s.edit.images.length ? 'Add an image' : !s.edit.prompt.trim() ? 'Write an instruction' : null
@@ -521,7 +524,11 @@ export function Inspector() {
   const tool = useStore((s) => s.tool)
   const viewing = useStore((s) => s.viewing)
   const activeModel = useStore((s) => s.activeModel)
+  const workspace = useStore((s) => s.workspace)
+  const traditional = workspace === 'traditional'
   const count = useStore((s) => (s.activeModel === 'moss' ? s.moss.count : s.sampling.count))
+  useStore((s) => s.adjust)
+  useStore((s) => s.resize)
   useStore((s) => s.moss)
   useStore((s) => s.layout)
   // Re-render when any form changes so the run button's state stays current.
@@ -536,12 +543,22 @@ export function Inspector() {
   const queueing = useStore((s) => s.jobs.some((j) => j.status === 'running' || j.status === 'queued'))
   const blocker = canRun(tool)
   const expandAsset = useStore((s) => (s.expand.image ? s.assetMap[s.expand.image] : undefined))
-  const cropOnly = tool === 'expand' && activeModel === 'qwen' && !!expandAsset && covered(expandAsset.width, expandAsset.height, expand, expand.angle)
+  const cropOnly = tool === 'expand' && workspace === 'qwen' && !!expandAsset && covered(expandAsset.width, expandAsset.height, expand, expand.angle)
+  const [busy, setBusy] = useState(false)
 
   // Single-image tools pick up the image you are looking at when they have none yet.
   useEffect(() => {
     const s = useStore.getState()
-    if (!viewing || s.activeModel !== 'qwen') return
+    if (!viewing) return
+    if (s.workspace === 'traditional') {
+      // Crop never grows the canvas; a frame left over from Expand starts fresh.
+      const e = s.expand
+      if (tool === 'crop' && (!e.image || e.left > 0 || e.top > 0 || e.right > 0 || e.bottom > 0)) s.useImage('crop', e.image ?? viewing)
+      if (tool === 'adjust' && !s.adjust.image) s.patch('adjust', { image: viewing })
+      if (tool === 'resize' && !s.resize.image) s.patch('resize', { image: viewing })
+      return
+    }
+    if (s.workspace !== 'qwen') return
     if (tool === 'region' && !s.region.image) s.patch('region', { image: viewing })
     if (tool === 'expand' && !s.expand.image) s.patch('expand', { image: viewing })
     if (tool === 'cutout' && !s.cutout.image) s.patch('cutout', { image: viewing })
@@ -552,7 +569,13 @@ export function Inspector() {
   return (
     <aside className="inspector">
       <div className="inspector-body">
-        {activeModel === 'moss' ? (
+        {traditional ? (
+          <>
+            {tool === 'crop' && <CropPanel />}
+            {tool === 'adjust' && <AdjustPanel />}
+            {tool === 'resize' && <ResizePanel />}
+          </>
+        ) : activeModel === 'moss' ? (
           <>
             {tool === 'create' && <MossCreatePanel />}
             {tool === 'layout' && <LayoutPanel />}
@@ -569,10 +592,22 @@ export function Inspector() {
         )}
       </div>
       <div className="inspector-foot">
-        <button className="btn primary big" disabled={!!blocker} onClick={() => runTool(tool)} title={queueing && !cropOnly ? 'Runs after the jobs ahead of it (⌘ Enter)' : '⌘ Enter'}>
-          {blocker ?? (cropOnly ? (expand.angle ? 'Straighten' : 'Crop') : `${queueing ? 'Add to queue' : LABEL[tool]}${count > 1 ? ` · ${count}` : ''}`)}
+        <button
+          className="btn primary big"
+          disabled={!!blocker || busy}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              await runTool(tool)
+            } finally {
+              setBusy(false)
+            }
+          }}
+          title={queueing && !cropOnly && !traditional ? 'Runs after the jobs ahead of it (⌘ Enter)' : '⌘ Enter'}
+        >
+          {busy && traditional ? 'Saving…' : blocker ?? (traditional ? (tool === 'crop' && expand.angle ? 'Straighten and crop' : TRADITIONAL_LABEL[tool]) : cropOnly ? (expand.angle ? 'Straighten' : 'Crop') : `${queueing ? 'Add to queue' : LABEL[tool]}${count > 1 ? ` · ${count}` : ''}`)}
         </button>
-        {engine && engine.state !== 'ready' && !cropOnly && <span className="hint" style={{ textAlign: 'center' }}>Jobs wait in the queue until the engine is ready.</span>}
+        {engine && engine.state !== 'ready' && !cropOnly && !traditional && <span className="hint" style={{ textAlign: 'center' }}>Jobs wait in the queue until the engine is ready.</span>}
       </div>
     </aside>
   )

@@ -20,7 +20,7 @@ export type Job = {
   id: string
   op: Op
   params: Record<string, any>
-  status: 'queued' | 'running' | 'done' | 'error' | 'cancelled'
+  status: 'queued' | 'paused' | 'running' | 'done' | 'error' | 'cancelled'
   progress: number
   phase: string
   error: string | null
@@ -34,6 +34,9 @@ export type Job = {
   index: number
   count: number
   source: 'app' | 'agent'
+  completed: number
+  position: number | null // place among the waiting jobs, 0 = next
+  eta: number | null // estimated seconds until the job is done
 }
 
 export type Op = 'generate' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix'
@@ -141,7 +144,7 @@ export const api = {
   status: () => req<Status>('GET', '/api/status'),
   setupStart: () => req<SetupStatus>('POST', '/api/setup/start'),
   setupCancel: () => req<SetupStatus>('POST', '/api/setup/cancel'),
-  setModel: (model: string) => req<{ active_model: 'qwen' | 'moss'; engines: Record<string, EngineStatus> }>('POST', '/api/model', { model }),
+  setModel: (model: string) => req<{ active_model: 'qwen' | 'moss'; engines: Record<string, EngineStatus>; switch_after?: 'qwen' | 'moss' }>('POST', '/api/model', { model }),
   mossInfo: () => req<{ loras: string[] }>('GET', '/api/moss'),
   engine: (action: 'start' | 'stop' | 'restart' | 'free') => req<EngineStatus>('POST', `/api/engine/${action}`),
   models: () => req<Models>('GET', '/api/models'),
@@ -168,6 +171,18 @@ export const api = {
   job: (id: string) => req<Job>('GET', `/api/jobs/${id}`),
   wait: (id: string, timeout = 60) => req<Job>('GET', `/api/jobs/${id}/wait?timeout=${timeout}`),
   cancel: (id: string) => req<{ ok: boolean }>('POST', `/api/jobs/${id}/cancel`),
+  pause: (id: string) => req<{ ok: boolean }>('POST', `/api/jobs/${id}/pause`),
+  resume: (id: string) => req<{ ok: boolean }>('POST', `/api/jobs/${id}/resume`),
+  reorder: (ids: string[]) => req<{ order: string[] }>('POST', '/api/jobs/order', { ids }),
+  transform: (id: string, body: { rotate?: number; flip?: 'h' | 'v'; width?: number; height?: number }) => req<Asset>('POST', `/api/assets/${id}/transform`, body),
+  saveRendered: (parent: string, image: Blob, params: Record<string, any>, prompt: string) => {
+    const fd = new FormData()
+    fd.append('file', image, 'adjusted.png')
+    fd.append('parent', parent)
+    fd.append('params', JSON.stringify(params))
+    fd.append('prompt', prompt)
+    return req<Asset>('POST', '/api/assets/rendered', fd)
+  },
 }
 
 export const fileUrl = (id: string) => `/api/assets/${id}/file`

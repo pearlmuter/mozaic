@@ -1,14 +1,19 @@
 import { create } from 'zustand'
 import { api, type Asset, type EngineStatus, type Job, type Models, type Op, type Settings, type SetupStatus } from './api'
+import { NEUTRAL, type Adjustments, type Histogram } from './develop'
 
-export type Tool = 'create' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix' | 'layout'
+export type Tool = 'create' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix' | 'layout' | 'crop' | 'adjust' | 'resize'
 export type ModelId = 'qwen' | 'moss'
+// What the top bar switches between: one of the two models, or the traditional photo tools, which need neither.
+export type Workspace = ModelId | 'traditional'
 
-export const MODEL_TOOLS: Record<ModelId, Tool[]> = {
+export const MODEL_TOOLS: Record<Workspace, Tool[]> = {
   qwen: ['create', 'edit', 'region', 'expand', 'cutout', 'remix'],
   moss: ['create', 'layout'],
+  traditional: ['crop', 'adjust', 'resize'],
 }
 export const MODEL_NAMES: Record<ModelId, string> = { qwen: 'Qwen Image 2.1', moss: 'MOSS-Image' }
+export const WORKSPACE_NAMES: Record<Workspace, string> = { ...MODEL_NAMES, traditional: 'Traditional' }
 export type View = 'studio' | 'library'
 
 export type Sampling = {
@@ -53,6 +58,8 @@ export type ExpandForm = {
 }
 export type CutoutForm = { image: string | null; subject: string }
 export type RemixForm = { image: string | null; prompt: string; strength: number; scale: number; useReference: boolean }
+export type AdjustForm = Adjustments & { image: string | null; original: boolean }
+export type ResizeForm = { image: string | null; width: number; height: number; lock: boolean }
 
 export type MossForm = {
   prompt: string
@@ -86,6 +93,7 @@ type State = {
   engine: EngineStatus | null
   setup: SetupStatus | null
   activeModel: ModelId
+  workspace: Workspace
   engines: Partial<Record<ModelId, EngineStatus>>
   setups: Partial<Record<ModelId, SetupStatus>>
   mossInfo: { loras: string[] } | null
@@ -113,10 +121,13 @@ type State = {
   expand: ExpandForm
   cutout: CutoutForm
   remix: RemixForm
+  adjust: AdjustForm
+  resize: ResizeForm
+  histogram: Histogram | null
   mask: { tool: MaskTool; size: number; version: number; hasMask: boolean }
 
   set: (p: Partial<State>) => void
-  patch: <K extends 'create' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix' | 'sampling' | 'mask' | 'moss' | 'layout'>(k: K, v: Partial<State[K]>) => void
+  patch: <K extends 'create' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix' | 'adjust' | 'resize' | 'sampling' | 'mask' | 'moss' | 'layout'>(k: K, v: Partial<State[K]>) => void
   toast: (text: string, kind?: Toast['kind']) => void
   upsertAsset: (a: Asset) => void
   removeAsset: (id: string) => void
@@ -129,6 +140,7 @@ type State = {
   loadModels: () => Promise<void>
   applyEngines: (active: ModelId, engines: Partial<Record<ModelId, EngineStatus>>, setups?: Partial<Record<ModelId, SetupStatus>>) => void
   switchModel: (m: ModelId) => Promise<void>
+  setWorkspace: (w: Workspace) => void
   run: (op: Op, params: Record<string, any>) => Promise<Job | null>
 }
 
@@ -161,6 +173,7 @@ export const useStore = create<State>((set, get) => ({
   engine: null,
   setup: null,
   activeModel: 'qwen',
+  workspace: saved.workspace === 'traditional' ? 'traditional' : 'qwen',
   engines: {},
   setups: {},
   mossInfo: null,
@@ -200,6 +213,9 @@ export const useStore = create<State>((set, get) => ({
   expand: { image: null, left: 0, top: 0, right: 0, bottom: 0, angle: 0, fit: true, ratio: null, leveling: false, prompt: '', fill: 'blur', protect: true },
   cutout: { image: null, subject: '' },
   remix: { image: null, prompt: '', strength: 0.45, scale: 1, useReference: false },
+  adjust: { ...NEUTRAL, image: null, original: false },
+  resize: { image: null, width: 0, height: 0, lock: true },
+  histogram: null,
   mask: { tool: 'brush', size: 60, version: 0, hasMask: false },
 
   set: (p) => set(p),
@@ -249,10 +265,13 @@ export const useStore = create<State>((set, get) => ({
     const s = get()
     if (tool === 'edit') s.patch('edit', { images: [id, ...s.edit.images.filter((x) => x !== id)].slice(0, 10) })
     else if (tool === 'region') s.patch('region', { image: id })
-    else if (tool === 'expand') s.patch('expand', { image: id, left: 0, top: 0, right: 0, bottom: 0, angle: 0, ratio: null, leveling: false })
+    else if (tool === 'expand' || tool === 'crop') s.patch('expand', { image: id, left: 0, top: 0, right: 0, bottom: 0, angle: 0, ratio: null, leveling: false, ...(tool === 'crop' ? { fit: true } : {}) })
+    else if (tool === 'adjust') s.patch('adjust', { image: id, original: false })
+    else if (tool === 'resize') s.patch('resize', { image: id, width: 0, height: 0 })
     else if (tool === 'cutout') s.patch('cutout', { image: id })
     else if (tool === 'remix') s.patch('remix', { image: id })
-    set({ tool, view: 'studio', viewing: id, live: null, compare: false })
+    const workspace = MODEL_TOOLS.traditional.includes(tool) ? 'traditional' : s.workspace === 'traditional' ? s.activeModel : s.workspace
+    set({ tool, workspace, view: 'studio', viewing: id, live: null, compare: false })
   },
   // A blank stage for the next prompt; the previous image stays in the library and the prompt is kept to tweak.
   newImage: () => {
@@ -280,20 +299,35 @@ export const useStore = create<State>((set, get) => ({
     const allEngines = { ...s.engines, ...engines }
     const allSetups = { ...s.setups, ...(setups ?? {}) }
     const out: Partial<State> = { activeModel: active, engines: allEngines, setups: allSetups, engine: allEngines[active] ?? null, setup: allSetups[active] ?? null }
-    if (!MODEL_TOOLS[active].includes(s.tool)) out.tool = 'create'
+    // The traditional tools don't depend on the model, so a model change leaves that workspace alone.
+    if (s.workspace !== 'traditional') {
+      out.workspace = active
+      if (!MODEL_TOOLS[active].includes(s.tool)) out.tool = 'create'
+    }
     set(out)
   },
   switchModel: async (m) => {
     const s = get()
+    if (s.workspace !== m) set({ workspace: m, tool: MODEL_TOOLS[m].includes(s.tool) ? s.tool : 'create' })
     if (s.activeModel === m) return
     s.applyEngines(m, {})
     try {
       const r = await api.setModel(m)
+      if (r.switch_after) {
+        // The running job keeps its model; the switch follows when it's done. Its tools are ready meanwhile.
+        set({ workspace: m })
+        return s.toast(`${MODEL_NAMES[m]} loads when the running job finishes`, 'info')
+      }
       get().applyEngines(r.active_model, r.engines)
       get().loadModels()
     } catch (e: any) {
       s.toast(e.message, 'error')
     }
+  },
+  setWorkspace: (w) => {
+    if (w !== 'traditional') return void get().switchModel(w)
+    const s = get()
+    set({ workspace: w, view: 'studio', tool: MODEL_TOOLS.traditional.includes(s.tool) ? s.tool : 'adjust' })
   },
   run: async (op, params) => {
     const s = get()
@@ -340,7 +374,7 @@ export const useStore = create<State>((set, get) => ({
 // Persist a few UI preferences between launches.
 useStore.subscribe((s) => {
   try {
-    localStorage.setItem('mozaic.ui', JSON.stringify({ tool: s.tool, sampling: s.sampling, create: s.create, moss: s.moss, layout: { ...s.layout, selected: null } }))
+    localStorage.setItem('mozaic.ui', JSON.stringify({ tool: s.tool, workspace: s.workspace, sampling: s.sampling, create: s.create, moss: s.moss, layout: { ...s.layout, selected: null } }))
   } catch {
     /* storage unavailable */
   }

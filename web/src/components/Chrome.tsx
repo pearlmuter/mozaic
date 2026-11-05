@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { AlertTriangle, Bot, Images, ListOrdered, Loader2, Play, Search, Settings as Gear, Star, Square, X } from 'lucide-react'
+import { AlertTriangle, Bot, GripVertical, Images, ListOrdered, Loader2, Pause, Play, Search, Settings as Gear, Star, Square, X } from 'lucide-react'
 import { api, thumbUrl, type Asset, type Job } from '../api'
-import { MODEL_NAMES, MODEL_TOOLS, useStore, type ModelId } from '../store'
+import { MODEL_NAMES, MODEL_TOOLS, WORKSPACE_NAMES, useStore, type ModelId, type Workspace } from '../store'
 import { MozaicMark } from './Viewer'
 import { OP_TOOL, TOOL_ICONS, TOOL_NAMES } from './actions'
 
@@ -79,11 +79,24 @@ function QueueThumb({ src, icon }: { src?: string; icon: ReactNode }) {
   return <div className="qthumb">{src && failed !== src ? <img src={src} alt="" onError={() => setFailed(src)} /> : icon}</div>
 }
 
+/** "4 min", "1 h 35 min": rounded, since these are estimates. */
+export function duration(secs: number) {
+  const m = Math.max(1, Math.round(secs / 60))
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`
+}
+
+// Loading the other model takes about this long when the queue switches between Qwen and MOSS.
+const SWITCH_SECONDS = 60
+
 function QueuePanel() {
   const jobs = useStore((s) => s.jobs)
   const previews = useStore((s) => s.previews)
   const set = useStore((s) => s.set)
   const show = useStore((s) => s.show)
+  const toast = useStore((s) => s.toast)
+  // While dragging, the order shown is the one being dragged into; it clears once the server agrees.
+  const [order, setOrder] = useState<string[] | null>(null)
+  const [dragging, setDragging] = useState<string | null>(null)
   useEffect(() => {
     const close = (e: Event) => {
       if (e instanceof KeyboardEvent ? e.key === 'Escape' : !(e.target as HTMLElement).closest('.queue-panel, .queue-toggle')) set({ queueOpen: false })
@@ -92,27 +105,85 @@ function QueuePanel() {
     window.addEventListener('keydown', close)
     return () => (window.removeEventListener('pointerdown', close), window.removeEventListener('keydown', close))
   }, [set])
-  // The server lists newest first; the queue reads in the order jobs will run.
-  const active = jobs.filter((j) => j.status === 'running' || j.status === 'queued').sort((a, b) => (a.status === 'running' ? -1 : b.status === 'running' ? 1 : a.created_at - b.created_at))
-  const done = jobs.filter((j) => j.status !== 'running' && j.status !== 'queued').slice(0, 8)
-  const waiting = active.filter((j) => j.status === 'queued')
+  const running = jobs.filter((j) => j.status === 'running')
+  const serverWaiting = jobs.filter((j) => j.status === 'queued' || j.status === 'paused').sort((a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || a.created_at - b.created_at)
+  const waiting = order ? (order.map((id) => serverWaiting.find((j) => j.id === id)).filter(Boolean) as Job[]) : serverWaiting
+  useEffect(() => {
+    if (order && !dragging && serverWaiting.map((j) => j.id).join() === order.join()) setOrder(null)
+  }, [order, dragging, serverWaiting])
+  const done = jobs.filter((j) => !['running', 'queued', 'paused'].includes(j.status)).slice(0, 8)
+  const queued = waiting.filter((j) => j.status === 'queued')
+  const paused = waiting.filter((j) => j.status === 'paused')
+
+  // When each queued job should start, adding up the estimates ahead of it. Paused jobs are skipped.
+  const startsIn: Record<string, number> = {}
+  let clock = running.reduce((t, j) => t + (j.eta ?? 0), 0)
+  let model = running[0]?.params.model
+  for (const j of queued) {
+    if (model && j.params.model !== model) clock += SWITCH_SECONDS
+    startsIn[j.id] = clock
+    clock += j.eta ?? 0
+    model = j.params.model
+  }
+  const unknown = [...running, ...queued].some((j) => j.eta === null)
+
+  const drop = () => {
+    const ids = order
+    setDragging(null)
+    if (!ids || ids.join() === serverWaiting.map((j) => j.id).join()) return setOrder(null)
+    api.reorder(ids).catch((e) => (toast(e.message, 'error'), setOrder(null)))
+  }
+  const dragOver = (j: Job) => (e: React.DragEvent) => {
+    if (!dragging || !e.dataTransfer.types.includes('application/x-mozaic-job')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    if (j.id === dragging) return
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const ids = waiting.map((x) => x.id).filter((id) => id !== dragging)
+    const at = ids.indexOf(j.id) + (e.clientY > r.top + r.height / 2 ? 1 : 0)
+    ids.splice(at, 0, dragging)
+    if (ids.join() !== waiting.map((x) => x.id).join()) setOrder(ids)
+  }
+
   const row = (j: Job, place?: number) => {
     const t = jobTitle(j)
     const thumb = j.status === 'running' ? previews[j.id] : j.outputs[0] ? thumbUrl(j.outputs[0]) : j.params.image || j.params.images?.[0] ? thumbUrl(j.params.image ?? j.params.images[0]) : undefined
     const secs = j.started_at && j.finished_at ? Math.round(j.finished_at - j.started_at) : 0
+    const takes = j.eta !== null ? ` · takes about ${duration(j.eta)}` : ''
     const status =
       j.status === 'running'
-        ? `${j.phase}${j.steps && j.phase === 'Generating' ? ` ${j.step}/${j.steps}` : ''}${j.count > 1 ? ` · image ${j.index + 1} of ${j.count}` : ''}`
+        ? `${j.phase}${j.steps && j.phase === 'Generating' ? ` ${j.step}/${j.steps}` : ''}${j.count > 1 ? ` · image ${j.index + 1} of ${j.count}` : ''}${j.eta !== null ? ` · about ${duration(j.eta)} left` : ''}`
         : j.status === 'queued'
-          ? `Waiting · #${place}`
-          : j.status === 'done'
-            ? `Done · ${j.outputs.length} image${j.outputs.length === 1 ? '' : 's'}${secs ? ` · ${secs < 90 ? `${secs} s` : `${Math.round(secs / 60)} min`}` : ''}`
-            : j.status === 'error'
-              ? j.error || 'Failed'
-              : 'Cancelled'
+          ? `#${place}${startsIn[j.id] !== undefined && !unknown ? ` · starts in about ${duration(startsIn[j.id])}` : ''}${takes}`
+          : j.status === 'paused'
+            ? `Paused${j.completed ? ` · ${j.completed} of ${j.count} done` : ''}${takes}`
+            : j.status === 'done'
+              ? `Done · ${j.outputs.length} image${j.outputs.length === 1 ? '' : 's'}${secs ? ` · ${secs < 90 ? `${secs} s` : duration(secs)}` : ''}`
+              : j.status === 'error'
+                ? j.error || 'Failed'
+                : 'Cancelled'
     const open = () => (j.status === 'done' && j.outputs[0] ? show(j.outputs[0]) : j.status === 'running' || j.status === 'queued' ? set({ live: j.id, view: 'studio' }) : null)
+    const movable = j.status === 'queued' || j.status === 'paused'
     return (
-      <div key={j.id} className={`queue-row ${j.status}`} onClick={open}>
+      <div
+        key={j.id}
+        className={`queue-row ${j.status} ${dragging === j.id ? 'dragging' : ''}`}
+        onClick={open}
+        draggable={movable}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('application/x-mozaic-job', j.id)
+          e.dataTransfer.effectAllowed = 'move'
+          setDragging(j.id)
+        }}
+        onDragOver={movable ? dragOver(j) : undefined}
+        onDrop={(e) => (e.preventDefault(), drop())}
+        onDragEnd={drop}
+      >
+        {movable && (
+          <span className="grip" title="Drag to change the order">
+            <GripVertical size={14} />
+          </span>
+        )}
         <QueueThumb src={thumb} icon={TOOL_ICONS[t.tool](16)} />
         <div className="qtext">
           <div className="qtitle">
@@ -126,13 +197,28 @@ function QueuePanel() {
           </div>
           {t.prompt && <div className="qprompt">{t.prompt}</div>}
           <div className={`qstatus ${j.status === 'error' ? 'err' : ''}`}>{status}</div>
-          {j.status === 'running' && (
+          {(j.status === 'running' || (j.status === 'paused' && j.progress > 0)) && (
             <div className="bar">
               <i style={{ width: `${Math.round(j.progress * 100)}%` }} />
             </div>
           )}
         </div>
         {(j.status === 'running' || j.status === 'queued') && (
+          <button
+            className="btn sm ghost icon"
+            disabled={j.phase === 'Pausing'}
+            title={j.status === 'running' ? 'Pause now. It goes back first in line and keeps the images it finished; the one in progress starts over.' : 'Pause. It stays in the queue but doesn’t run until you resume it.'}
+            onClick={(e) => (e.stopPropagation(), api.pause(j.id))}
+          >
+            <Pause size={14} />
+          </button>
+        )}
+        {j.status === 'paused' && (
+          <button className="btn sm ghost icon" title="Resume" onClick={(e) => (e.stopPropagation(), api.resume(j.id))}>
+            <Play size={14} />
+          </button>
+        )}
+        {(j.status === 'running' || movable) && (
           <button className="btn sm ghost icon" title={j.status === 'running' ? 'Stop this job' : 'Remove from the queue'} onClick={(e) => (e.stopPropagation(), api.cancel(j.id))}>
             <X size={14} />
           </button>
@@ -140,19 +226,41 @@ function QueuePanel() {
       </div>
     )
   }
+  const left = clock
+  const count = running.length + waiting.length
   return (
     <div className="queue-panel">
       <div className="queue-head">
         <b>Queue</b>
-        <span className="hint">{active.length ? `${active.length} job${active.length === 1 ? '' : 's'}` : 'Nothing running'}</span>
-        {waiting.length > 1 && (
-          <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => waiting.forEach((j) => api.cancel(j.id))}>
-            Clear waiting
-          </button>
-        )}
+        <span className="hint">
+          {count ? `${count} job${count === 1 ? '' : 's'}` : 'Nothing running'}
+          {left > 0 && !unknown && ` · about ${duration(left)} left, done around ${new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+          {paused.length > 0 && ` · ${paused.length} paused`}
+        </span>
       </div>
-      {active.map((j, i) => row(j, active[0].status === 'running' ? i : i + 1))}
-      {!active.length && <div className="queue-empty hint">New jobs start right away. While one runs, the Generate button adds to the queue instead.</div>}
+      {waiting.length > 0 && (
+        <div className="queue-actions">
+          {queued.length > 0 && (
+            <button className="btn sm ghost" title="Hold every waiting job. The running job finishes first; pause it on its own row to stop it now." onClick={() => queued.forEach((j) => api.pause(j.id))}>
+              <Pause size={13} /> Pause waiting
+            </button>
+          )}
+          {paused.length > 0 && (
+            <button className="btn sm ghost" onClick={() => paused.forEach((j) => api.resume(j.id))}>
+              <Play size={13} /> Resume all
+            </button>
+          )}
+          {waiting.length > 1 && (
+            <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => confirm(`Remove all ${waiting.length} waiting jobs from the queue?`) && waiting.forEach((j) => api.cancel(j.id))}>
+              Clear waiting
+            </button>
+          )}
+        </div>
+      )}
+      {running.map((j) => row(j))}
+      {waiting.map((j, i) => row(j, i + 1))}
+      {!count && <div className="queue-empty hint">New jobs start right away. While one runs, the Generate button adds to the queue instead.</div>}
+      {waiting.length > 1 && <div className="queue-empty hint">Drag waiting jobs to change their order. Times are estimates from how long past jobs took on this Mac.</div>}
       {done.length > 0 && <div className="queue-sub">Recent</div>}
       {done.map((j) => row(j))}
     </div>
@@ -160,14 +268,19 @@ function QueuePanel() {
 }
 
 function ModelPicker() {
-  const active = useStore((s) => s.activeModel)
-  const switchModel = useStore((s) => s.switchModel)
+  const workspace = useStore((s) => s.workspace)
+  const setWorkspace = useStore((s) => s.setWorkspace)
   const busy = useStore((s) => s.jobs.some((j) => j.status === 'running'))
+  const titles: Record<Workspace, string> = {
+    qwen: busy ? 'Switching waits for the running job' : 'Only one model is loaded at a time',
+    moss: busy ? 'Switching waits for the running job' : 'Only one model is loaded at a time',
+    traditional: 'Crop, adjust and resize without a model. Queued jobs keep running.',
+  }
   return (
-    <div className="model-picker" title={busy ? 'Switching waits for the running job' : 'Only one model is loaded at a time'}>
-      {(['qwen', 'moss'] as ModelId[]).map((m) => (
-        <button key={m} className={active === m ? 'on' : ''} onClick={() => switchModel(m)}>
-          {MODEL_NAMES[m]}
+    <div className="model-picker">
+      {(['qwen', 'moss', 'traditional'] as Workspace[]).map((m) => (
+        <button key={m} className={workspace === m ? 'on' : ''} title={titles[m]} onClick={() => setWorkspace(m)}>
+          {WORKSPACE_NAMES[m]}
         </button>
       ))}
     </div>
@@ -178,7 +291,7 @@ export function Rail() {
   const tool = useStore((s) => s.tool)
   const view = useStore((s) => s.view)
   const set = useStore((s) => s.set)
-  const tools = MODEL_TOOLS[useStore((s) => s.activeModel)]
+  const tools = MODEL_TOOLS[useStore((s) => s.workspace)]
   return (
     <nav className="rail">
       {tools.map((t, i) => (
@@ -215,7 +328,7 @@ function JobTile({ job }: { job: Job }) {
         <circle cx="17" cy="17" r="14" stroke="var(--line-2)" strokeWidth="3" fill="none" />
         <circle cx="17" cy="17" r="14" stroke="var(--accent)" strokeWidth="3" fill="none" strokeDasharray={`${(pct / 100) * 88} 88`} transform="rotate(-90 17 17)" strokeLinecap="round" />
       </svg>
-      <span className="lbl">{job.status === 'queued' ? 'Queued' : `${pct}%`}</span>
+      <span className="lbl">{job.status === 'queued' ? 'Queued' : job.status === 'paused' ? 'Paused' : `${pct}%`}</span>
       <button
         className="btn sm ghost icon"
         style={{ position: 'absolute', right: 2, top: 2, zIndex: 2 }}
@@ -233,7 +346,7 @@ export function Filmstrip() {
   const jobs = useStore((s) => s.jobs)
   const viewing = useStore((s) => s.viewing)
   const show = useStore((s) => s.show)
-  const active = jobs.filter((j) => (j.status === 'running' || j.status === 'queued' || (j.status === 'error' && Date.now() / 1000 - (j.finished_at ?? 0) < 120)))
+  const active = jobs.filter((j) => (j.status === 'running' || j.status === 'queued' || j.status === 'paused' || (j.status === 'error' && Date.now() / 1000 - (j.finished_at ?? 0) < 120)))
   return (
     <div className="strip">
       {active.map((j) => (
@@ -270,6 +383,8 @@ const OPS = [
   { v: 'expand', label: 'Expanded' },
   { v: 'cutout', label: 'Cut out' },
   { v: 'remix', label: 'Remixed' },
+  { v: 'adjust', label: 'Adjusted' },
+  { v: 'transform', label: 'Rotated / resized' },
   { v: 'import', label: 'Imported' },
 ]
 

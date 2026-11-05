@@ -73,7 +73,9 @@ Jobs run one at a time in a shared queue with the person's own jobs. To queue se
 with wait=false: each returns a job_id and its place in the queue right away. Then call wait_for_jobs:
 it returns as soon as the next job finishes, with its images, so you can review each result and queue
 fixes while the rest keep running (all=true waits for every job instead). list_jobs shows the queue,
-and cancel_job removes one job from it. Crops and straightens (expand_image with negative sides) are
+cancel_job removes one job from it, pause_job and resume_job hold a job and let it go again (a paused job
+stays in the queue but doesn't run, even across restarts), and move_job changes a job's place in line.
+Each waiting job has minutes_left, an estimate from how long past jobs took on this Mac. Crops and straightens (expand_image with negative sides) are
 instant and skip the queue.
 """
 
@@ -83,6 +85,10 @@ INSTRUCTIONS = (
     "for prompting tips. Images are referenced by library id, absolute path, URL or data URI. Generation "
     "takes about a minute per image; tools wait for the result and return file paths plus small previews."
 )
+
+
+# A job in any of these states hasn't finished yet.
+WAITING = ("queued", "paused", "running")
 
 
 def base_url() -> str:
@@ -114,15 +120,17 @@ class Api:
         if self.on_submit:
             self.on_submit(ctx, job)
         if not wait:
-            queued = [j for j in reversed(await self.call("GET", "/api/jobs")) if j["status"] in ("queued", "running")]
-            ahead = next((i for i, j in enumerate(queued) if j["id"] == job["id"]), 0)
-            return [json.dumps({"job_id": job["id"], "status": job["status"], "jobs_ahead": ahead,
+            jobs = await self.call("GET", "/api/jobs")
+            running = sum(1 for j in jobs if j["status"] == "running")
+            ahead = sum(1 for j in jobs if j["status"] == "queued" and (j.get("position") or 0) < (job.get("position") or 0))
+            return [json.dumps({"job_id": job["id"], "status": job["status"], "jobs_ahead": running + ahead,
                                 "note": "Call wait_for_jobs to be told when it finishes."})]
         return await self.finish(ctx, job["id"], timeout, return_preview)
 
     async def finish(self, ctx: Context | None, job_id: str, timeout: float, return_preview: bool) -> list:
         deadline = time.time() + timeout
         job = await self.call("GET", f"/api/jobs/{job_id}")
+        # A paused job won't finish until someone resumes it, so don't wait for it.
         while job["status"] in ("queued", "running") and time.time() < deadline:
             job = await self.call("GET", f"/api/jobs/{job_id}/wait",
                                   params={"timeout": min(15, max(1, deadline - time.time()))})
@@ -135,7 +143,10 @@ class Api:
 
     async def describe_job(self, job: dict, return_preview: bool) -> list:
         summary: dict[str, Any] = {"job_id": job["id"], "operation": job["op"], "status": job["status"]}
-        if job["status"] in ("queued", "running"):
+        if job["status"] == "paused":
+            summary.update(progress=job["progress"], phase=job["phase"],
+                           note="Paused in the queue. It runs again after resume_job.")
+        elif job["status"] in WAITING:
             summary.update(progress=job["progress"], phase=job["phase"],
                            note="Still running. Call get_job with wait_seconds to keep waiting.")
         if job.get("error"):
@@ -178,6 +189,8 @@ def job_line(j: dict) -> dict:
         out["model"] = "moss"
     if j["status"] == "running":
         out.update(progress=j["progress"], phase=j["phase"])
+    if j["status"] in WAITING and j.get("eta") is not None:
+        out["minutes_left"] = round(j["eta"] / 60, 1)
     if j.get("error"):
         out["error"] = j["error"]
     if j.get("outputs"):
@@ -195,7 +208,7 @@ def build_mcp(channel: bool = False) -> MCPServer:
 
         async def announce(conn: Any, job_id: str) -> None:
             job = await api.call("GET", f"/api/jobs/{job_id}")
-            while job["status"] in ("queued", "running"):
+            while job["status"] in WAITING:
                 job = await api.call("GET", f"/api/jobs/{job_id}/wait", params={"timeout": 15})
             p = job.get("params") or {}
             what = f'{job["op"]}' + (f': "{p["prompt"][:120]}"' if p.get("prompt") else "")
@@ -203,7 +216,7 @@ def build_mcp(channel: bool = False) -> MCPServer:
                 text = f"Mozaic finished {what}. Images: {', '.join(job['outputs'])}. Call get_job to review them."
             else:
                 text = f"Mozaic job {what} ended as {job['status']}" + (f": {job['error']}" if job.get("error") else ".")
-            left = sum(1 for j in await api.call("GET", "/api/jobs") if j["status"] in ("queued", "running"))
+            left = sum(1 for j in await api.call("GET", "/api/jobs") if j["status"] in WAITING)
             try:
                 await conn.notify("notifications/claude/channel", {
                     "content": text, "meta": {"job_id": job["id"], "status": job["status"], "jobs_left": str(left)}})
@@ -213,7 +226,7 @@ def build_mcp(channel: bool = False) -> MCPServer:
         def on_submit(ctx: Context | None, job: dict) -> None:
             # The session's connection outlives the tool call, so events can be pushed while the agent is idle.
             conn = getattr(getattr(ctx, "session", None), "_connection", None) if ctx else None
-            if conn is None or job["id"] in watched or job["status"] not in ("queued", "running"):
+            if conn is None or job["id"] in watched or job["status"] not in WAITING:
                 return
             watched.add(job["id"])
             asyncio.get_running_loop().create_task(announce(conn.outbound, job["id"]))
@@ -482,8 +495,9 @@ def build_mcp(channel: bool = False) -> MCPServer:
         """The job queue: the running job, everything waiting in order, and the last few finished jobs.
         source tells whether a job came from the person in the app or from an agent."""
         jobs = await api.call("GET", "/api/jobs")
-        active = [job_line(j) for j in reversed(jobs) if j["status"] in ("queued", "running")]
-        done = [job_line(j) for j in jobs if j["status"] not in ("queued", "running")][:max(0, include_finished)]
+        active = [job_line(j) for j in sorted((j for j in jobs if j["status"] in WAITING),
+                                              key=lambda j: -1 if j["status"] == "running" else j.get("position") or 0)]
+        done = [job_line(j) for j in jobs if j["status"] not in WAITING][:max(0, include_finished)]
         return [json.dumps({"queue": active, "recently_finished": done}, indent=2)]
 
     @mcp.tool(structured_output=False)
@@ -494,25 +508,28 @@ def build_mcp(channel: bool = False) -> MCPServer:
         job_ids: the jobs to wait for; by default every job that is queued or running now.
         Returns as soon as one of them finishes (all=true: when every one has), and lists the rest as
         still pending. Jobs among job_ids that already finished are returned at once. Call it again to
-        collect the next. If the timeout passes first, it returns with nothing finished."""
+        collect the next. If the timeout passes first, it returns with nothing finished. Paused jobs are
+        listed as pending but not waited for."""
         jobs = await api.call("GET", "/api/jobs")
-        active = {j["id"] for j in jobs if j["status"] in ("queued", "running")}
+        active = {j["id"] for j in jobs if j["status"] in WAITING}
         wanted = list(job_ids) if job_ids else [j["id"] for j in reversed(jobs) if j["id"] in active]
         if not wanted:
             return [json.dumps({"finished": [], "pending": [], "note": "Nothing is queued."})]
         deadline = time.time() + timeout
         while True:
             states = {jid: await api.call("GET", f"/api/jobs/{jid}") for jid in wanted}
-            finished = [j for j in states.values() if j["status"] not in ("queued", "running")]
-            pending = [j for j in states.values() if j["status"] in ("queued", "running")]
-            if (finished and not all) or not pending or time.time() > deadline:
+            finished = [j for j in states.values() if j["status"] not in WAITING]
+            pending = [j for j in states.values() if j["status"] in WAITING]
+            # Paused jobs only move again once resumed, so waiting for them alone would just run out the clock.
+            live = [j for j in pending if j["status"] != "paused"]
+            if (finished and not all) or not live or time.time() > deadline:
                 break
             if ctx is not None:
                 try:
                     await ctx.report_progress(len(finished), len(wanted), f"{len(pending)} jobs still running")
                 except Exception:
                     pass
-            await api.call("GET", f"/api/jobs/{pending[0]['id']}/wait",
+            await api.call("GET", f"/api/jobs/{live[0]['id']}/wait",
                            params={"timeout": min(15, max(1, deadline - time.time()))})
         out: list = [json.dumps({"finished": [job_line(j) for j in finished],
                                  "pending": [job_line(j) for j in pending]}, indent=2)]
@@ -524,6 +541,29 @@ def build_mcp(channel: bool = False) -> MCPServer:
     async def cancel_job(job_id: str) -> list:
         """Cancel a queued or running job."""
         return [json.dumps(await api.call("POST", f"/api/jobs/{job_id}/cancel"))]
+
+    @mcp.tool(structured_output=False)
+    async def pause_job(job_id: str) -> list:
+        """Hold a job in the queue. A waiting job is skipped until resumed; a running job stops now and goes back
+        first in line, keeping the images it finished (the image it was on starts over)."""
+        return [json.dumps(await api.call("POST", f"/api/jobs/{job_id}/pause"))]
+
+    @mcp.tool(structured_output=False)
+    async def resume_job(job_id: str) -> list:
+        """Let a paused job run again from its place in the queue."""
+        return [json.dumps(await api.call("POST", f"/api/jobs/{job_id}/resume"))]
+
+    @mcp.tool(structured_output=False)
+    async def move_job(job_id: str, position: int) -> list:
+        """Move a waiting job to another place in the queue: 0 runs next, -1 runs last."""
+        jobs = await api.call("GET", "/api/jobs")
+        waiting = [j["id"] for j in sorted((j for j in jobs if j["status"] in ("queued", "paused")),
+                                           key=lambda j: j.get("position") or 0)]
+        if job_id not in waiting:
+            return [json.dumps({"ok": False, "error": "Only queued or paused jobs can be moved"})]
+        waiting.remove(job_id)
+        waiting.insert(len(waiting) if position < 0 else min(position, len(waiting)), job_id)
+        return [json.dumps(await api.call("POST", "/api/jobs/order", json={"ids": waiting}))]
 
     @mcp.tool(structured_output=False)
     async def list_images(limit: int = 20, query: str = "", favorites_only: bool = False,

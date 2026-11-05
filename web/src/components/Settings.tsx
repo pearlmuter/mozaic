@@ -188,7 +188,7 @@ export function SettingsModal() {
                 <div className="field">
                   <label>KV cache location</label>
                   <select value={draft.cache_device} onChange={(e) => p({ cache_device: e.target.value })}>
-                    <option value="auto">Auto</option>
+                    <option value="auto">Auto (RAM; int8 for big edits)</option>
                     <option value="gpu">GPU</option>
                     <option value="cpu">RAM</option>
                     <option value="off">Off (recompute)</option>

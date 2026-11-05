@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import io
 import json
 import logging
 import re
@@ -17,8 +18,9 @@ import httpx
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
-from . import __version__, config, library
+from . import __version__, config, imaging, library
 from .comfy import engine
 from .installer import installers
 from .moss import engines, moss_engine
@@ -55,6 +57,7 @@ def create_app(idle_exit: float = 0) -> FastAPI:
     async def lifespan(app: FastAPI):
         config.ensure_dirs()
         library.db()
+        queue.restore()
         queue.start()
         engines.listeners.append(bus.publish)
         moss_engine.listeners.append(bus.publish)
@@ -144,10 +147,13 @@ def create_app(idle_exit: float = 0) -> FastAPI:
 
     @app.post("/api/model")
     async def set_model(body: dict = Body(...)):
-        try:
-            await engines.use(body.get("model", ""))
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+        model = body.get("model", "")
+        if model not in ("qwen", "moss"):
+            raise HTTPException(400, f"Unknown model '{model}'")
+        # Never stop the engine under a running job: the switch happens once that job is done.
+        if queue.request_switch(model):
+            return {"active_model": engines.active, "engines": engines.statuses(), "switch_after": model}
+        await engines.use(model)
         return {"active_model": engines.active, "engines": engines.statuses()}
 
     @app.get("/api/moss")
@@ -278,6 +284,38 @@ def create_app(idle_exit: float = 0) -> FastAPI:
         bus.publish({"type": "asset_deleted", "id": aid})
         return {"ok": True}
 
+    @app.post("/api/assets/{aid}/transform")
+    async def transform(aid: str, body: dict = Body(...)):
+        """Traditional rotate, flip and resize: instant pixel work that saves a new image."""
+        a = library.get(aid)
+        if not a:
+            raise HTTPException(404, "Not found")
+        try:
+            img, label = imaging.transform(library.open_image(aid), rotate=int(body.get("rotate") or 0),
+                                           flip=body.get("flip") or "", width=int(body.get("width") or 0),
+                                           height=int(body.get("height") or 0))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        out = library.add_image(img, source="edited", op="transform", prompt=label, params=body, parents=[aid])
+        bus.publish({"type": "asset", "asset": out})
+        return out
+
+    @app.post("/api/assets/rendered")
+    async def rendered(file: UploadFile = File(...), parent: str = Form(...), params: str = Form("{}"),
+                       prompt: str = Form("Adjust")):
+        """Saves an image the UI rendered from `parent` (Traditional › Adjust), with the settings it used."""
+        if not library.get(parent):
+            raise HTTPException(400, f"Unknown image id '{parent}'")
+        try:
+            img = Image.open(io.BytesIO(await file.read()))
+            img.load()
+            settings = json.loads(params)
+        except Exception as e:
+            raise HTTPException(400, f"Not a readable image ({e})")
+        out = library.add_image(img, source="edited", op="adjust", prompt=prompt, params=settings, parents=[parent])
+        bus.publish({"type": "asset", "asset": out})
+        return out
+
     @app.post("/api/assets/{aid}/reveal")
     async def reveal(aid: str):
         a = library.get(aid)
@@ -317,6 +355,19 @@ def create_app(idle_exit: float = 0) -> FastAPI:
     @app.post("/api/jobs/{jid}/cancel")
     async def cancel(jid: str):
         return {"ok": await queue.cancel(jid)}
+
+    @app.post("/api/jobs/{jid}/pause")
+    async def pause(jid: str):
+        return {"ok": await queue.pause(jid)}
+
+    @app.post("/api/jobs/{jid}/resume")
+    async def resume(jid: str):
+        return {"ok": queue.resume(jid)}
+
+    @app.post("/api/jobs/order")
+    async def reorder(body: dict = Body(...)):
+        """Sets the order of the waiting jobs: {"ids": [...]}, next to run first."""
+        return {"order": queue.reorder([str(i) for i in body.get("ids") or []])}
 
     # ---------- events ----------
 

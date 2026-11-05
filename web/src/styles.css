@@ -1842,3 +1842,123 @@ input[type='range'] {
   height: 100%;
   background: var(--accent);
 }
+
+/* Queue: pause, resume and drag to reorder. */
+.queue-actions {
+  display: flex;
+  gap: 4px;
+  padding: 0 4px 6px;
+}
+
+.queue-row .grip {
+  flex: 0 0 auto;
+  margin: 0 -6px 0 -4px;
+  color: var(--text-3);
+  cursor: grab;
+  display: flex;
+}
+
+.queue-row.paused .qthumb,
+.queue-row.paused .qtext {
+  opacity: 0.55;
+}
+
+.queue-row.dragging {
+  background: var(--accent-soft);
+  outline: 1px dashed var(--accent);
+}
+
+/* Traditional › Adjust */
+.adjust-canvas {
+  display: block;
+}
+
+.histogram {
+  display: block;
+  width: 100%;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.histogram path {
+  stroke: none;
+  mix-blend-mode: screen;
+}
+
+.histogram .l { fill: rgba(236, 237, 240, 0.28); }
+.histogram .r { fill: rgba(255, 90, 90, 0.45); }
+.histogram .g { fill: rgba(90, 220, 120, 0.45); }
+.histogram .b { fill: rgba(90, 140, 255, 0.5); }
+
+.adj-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.adj-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-2);
+}
+
+.adj-head .btn {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.field.adj {
+  gap: 2px;
+}
+
+.field.adj .val.changed {
+  color: var(--accent);
+}
+
+/* A track filled from the neutral point to the value, so it's clear which way a slider has moved. */
+.field.adj input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  background: transparent;
+}
+
+.field.adj input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--line-2) var(--from), var(--accent) var(--from), var(--accent) var(--to), var(--line-2) var(--to));
+}
+
+.field.adj input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--panel);
+  box-shadow: 0 0 0 1px var(--line-2);
+}
+
+.field.adj input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--line-2) var(--from), var(--accent) var(--from), var(--accent) var(--to), var(--line-2) var(--to));
+}
+
+.field.adj input[type='range']::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  border: 2px solid var(--panel);
+}

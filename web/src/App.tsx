@@ -95,7 +95,7 @@ function useShortcuts() {
         return
       }
       if (e.metaKey || e.ctrlKey || e.altKey) return
-      const tools: Tool[] = MODEL_TOOLS[s.activeModel]
+      const tools: Tool[] = MODEL_TOOLS[s.workspace]
       if (/^[1-9]$/.test(e.key) && tools[Number(e.key) - 1]) s.set({ tool: tools[Number(e.key) - 1], view: 'studio' })
       else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
         const i = s.assets.findIndex((a) => a.id === s.viewing)
@@ -103,6 +103,7 @@ function useShortcuts() {
         if (next) s.show(next.id)
       } else if (e.key === 'f') window.dispatchEvent(new Event('mozaic:fit'))
       else if (e.key === 'c') s.set({ compare: !s.compare })
+      else if (e.key === '\\' && s.workspace === 'traditional' && s.tool === 'adjust') s.patch('adjust', { original: !s.adjust.original })
       else if (e.key === 's' && s.viewing) {
         const a = s.assetMap[s.viewing]
         if (a) api.patch(a.id, { favorite: !a.favorite }).then(s.upsertAsset)
