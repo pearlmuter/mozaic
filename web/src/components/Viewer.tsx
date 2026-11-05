@@ -393,8 +393,9 @@ export function Viewer() {
             {asset.op} · {asset.width}×{asset.height}
             {asset.has_alpha ? ' · alpha' : ''}
             {asset.params?.model === 'moss' ? ` · MOSS ${asset.params.checkpoint === 'base' ? 'Base' : 'SFT'}` : ''}
-            {asset.params?.seed !== undefined ? ` · seed ${asset.params.seed}` : ''}
-            {asset.params?.turbo ? ' · turbo' : asset.params?.steps ? ` · ${asset.params.steps} steps` : ''}
+            {asset.params?.crop_only ? ` · ${asset.params.angle ? `straightened ${asset.params.angle > 0 ? '+' : ''}${asset.params.angle}°` : 'cropped'}` : ''}
+            {asset.params?.seed !== undefined && !asset.params.crop_only ? ` · seed ${asset.params.seed}` : ''}
+            {asset.params?.crop_only ? '' : asset.params?.turbo ? ' · turbo' : asset.params?.steps ? ` · ${asset.params.steps} steps` : ''}
           </div>
         </div>
       )}
