@@ -33,6 +33,7 @@ export type Job = {
   steps: number
   index: number
   count: number
+  source: 'app' | 'agent'
 }
 
 export type Op = 'generate' | 'edit' | 'region' | 'expand' | 'cutout' | 'remix'

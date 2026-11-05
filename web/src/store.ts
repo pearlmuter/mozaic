@@ -103,6 +103,7 @@ type State = {
   models: Models | null
   settings: Settings | null
   settingsOpen: boolean
+  queueOpen: boolean
   pickerFor: null | { title: string; onPick: (id: string) => void }
   toasts: Toast[]
   sampling: Sampling
@@ -141,6 +142,19 @@ const saved = (() => {
 
 let toastId = 0
 
+/** True while any job is running or waiting, so a new one joins the queue. */
+export function isBusy() {
+  return useStore.getState().jobs.some((j) => j.status === 'running' || j.status === 'queued')
+}
+
+// Follow a new job in the viewer, unless it joined a queue: then stay on the running one.
+function follow(job: Job, queued: boolean) {
+  const s = useStore.getState()
+  if (!queued) return s.set({ live: job.id, compare: false })
+  const ahead = s.jobs.filter((j) => (j.status === 'running' || j.status === 'queued') && j.id !== job.id).length
+  s.toast(`Added to the queue (${ahead} ahead)`, 'success')
+}
+
 export const useStore = create<State>((set, get) => ({
   view: 'studio',
   tool: saved.tool ?? 'create',
@@ -173,6 +187,7 @@ export const useStore = create<State>((set, get) => ({
   models: null,
   settings: null,
   settingsOpen: false,
+  queueOpen: false,
   pickerFor: null,
   toasts: [],
   sampling: {
@@ -284,9 +299,10 @@ export const useStore = create<State>((set, get) => ({
     const s = get()
     if (params.model === 'moss') {
       try {
+        const busy = isBusy()
         const job = await api.submit(op, params)
         s.upsertJob(job)
-        set({ live: job.id, compare: false })
+        follow(job, busy)
         if (!s.moss.lockSeed && s.moss.seed !== -1) s.patch('moss', { seed: -1 })
         return job
       } catch (e: any) {
@@ -301,6 +317,7 @@ export const useStore = create<State>((set, get) => ({
       ...params,
     }
     try {
+      const busy = isBusy()
       const job = await api.submit(op, full)
       s.upsertJob(job)
       // Plain crops come back already done: open the result in Expand, ready to crop or straighten again.
@@ -310,7 +327,7 @@ export const useStore = create<State>((set, get) => ({
         return job
       }
       if (job.status === 'error') throw new Error(job.error ?? 'Failed')
-      set({ live: job.id, compare: false })
+      follow(job, busy)
       if (!smp.lockSeed && smp.seed !== -1) s.patch('sampling', { seed: -1 })
       return job
     } catch (e: any) {

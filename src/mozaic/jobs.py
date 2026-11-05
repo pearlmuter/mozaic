@@ -43,6 +43,7 @@ class Job:
     steps: int = 0
     index: int = 0
     count: int = 1
+    source: str = "app"  # app | agent (MCP)
     prompt_id: str | None = None
     moss_id: str | None = None
     cancel_requested: bool = False
@@ -54,7 +55,7 @@ class Job:
             "progress": round(self.progress, 4), "phase": self.phase, "error": self.error,
             "outputs": self.outputs, "text": self.text, "created_at": self.created_at,
             "started_at": self.started_at, "finished_at": self.finished_at, "step": self.step,
-            "steps": self.steps, "index": self.index, "count": self.count,
+            "steps": self.steps, "index": self.index, "count": self.count, "source": self.source,
         }
 
     def record(self) -> dict:
@@ -100,11 +101,12 @@ class JobQueue:
 
     # ----- public API -----
 
-    def submit(self, op: str, params: dict) -> Job:
+    def submit(self, op: str, params: dict, source: str = "app") -> Job:
         if op not in OPS:
             raise ValueError(f"Unknown operation '{op}'. Use one of: {', '.join(OPS)}")
         params = validate(op, dict(params))
-        job = Job(id=library.new_id(), op=op, params=params, count=int(params.get("count", 1)))
+        job = Job(id=library.new_id(), op=op, params=params, count=int(params.get("count", 1)),
+                  source="agent" if source == "agent" else "app")
         self.jobs[job.id] = job
         self.order.append(job.id)
         self.order = self.order[-300:]

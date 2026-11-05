@@ -25,7 +25,7 @@ export const TOOL_ICONS: Record<Tool, (size: number) => ReactNode> = {
   layout: (s) => <LayoutTemplate size={s} />,
 }
 
-const OP_TOOL: Record<string, Tool> = { generate: 'create', edit: 'edit', region: 'region', expand: 'expand', cutout: 'cutout', remix: 'remix' }
+export const OP_TOOL: Record<string, Tool> = { generate: 'create', edit: 'edit', region: 'region', expand: 'expand', cutout: 'cutout', remix: 'remix' }
 
 /** Loads an image's recorded parameters back into the matching tool. */
 export function reuseSettings(a: Asset) {

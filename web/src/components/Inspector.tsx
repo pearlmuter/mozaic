@@ -533,6 +533,7 @@ export function Inspector() {
   useStore((s) => s.remix)
   useStore((s) => s.mask.hasMask)
   const engine = useStore((s) => s.engine)
+  const queueing = useStore((s) => s.jobs.some((j) => j.status === 'running' || j.status === 'queued'))
   const blocker = canRun(tool)
   const expandAsset = useStore((s) => (s.expand.image ? s.assetMap[s.expand.image] : undefined))
   const cropOnly = tool === 'expand' && activeModel === 'qwen' && !!expandAsset && covered(expandAsset.width, expandAsset.height, expand, expand.angle)
@@ -568,8 +569,8 @@ export function Inspector() {
         )}
       </div>
       <div className="inspector-foot">
-        <button className="btn primary big" disabled={!!blocker} onClick={() => runTool(tool)} title="⌘ Enter">
-          {blocker ?? (cropOnly ? (expand.angle ? 'Straighten' : 'Crop') : `${LABEL[tool]}${count > 1 ? ` · ${count}` : ''}`)}
+        <button className="btn primary big" disabled={!!blocker} onClick={() => runTool(tool)} title={queueing && !cropOnly ? 'Runs after the jobs ahead of it (⌘ Enter)' : '⌘ Enter'}>
+          {blocker ?? (cropOnly ? (expand.angle ? 'Straighten' : 'Crop') : `${queueing ? 'Add to queue' : LABEL[tool]}${count > 1 ? ` · ${count}` : ''}`)}
         </button>
         {engine && engine.state !== 'ready' && !cropOnly && <span className="hint" style={{ textAlign: 'center' }}>Jobs wait in the queue until the engine is ready.</span>}
       </div>

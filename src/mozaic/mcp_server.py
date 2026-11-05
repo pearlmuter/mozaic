@@ -67,6 +67,14 @@ On this Mac a 1 MP Qwen image takes a few minutes; MOSS takes about 2-3 minutes 
 12-15 minutes at the official 50 steps. The first job after a model switch also loads the model.
 Tools wait for results by default (up to `timeout` seconds). If a job is still running when the
 wait ends, you get its job_id: call get_job with wait_seconds to keep waiting.
+
+## Queueing many jobs (batches, overnight work)
+Jobs run one at a time in a shared queue with the person's own jobs. To queue several, call the tools
+with wait=false: each returns a job_id and its place in the queue right away. Then call wait_for_jobs:
+it returns as soon as the next job finishes, with its images, so you can review each result and queue
+fixes while the rest keep running (all=true waits for every job instead). list_jobs shows the queue,
+and cancel_job removes one job from it. Crops and straightens (expand_image with negative sides) are
+instant and skip the queue.
 """
 
 INSTRUCTIONS = (
@@ -84,6 +92,7 @@ def base_url() -> str:
 class Api:
     def __init__(self) -> None:
         self.client = httpx.AsyncClient(base_url=base_url(), timeout=httpx.Timeout(120.0, connect=3.0))
+        self.on_submit: Any = None  # called with (ctx, job) after each submission
 
     async def call(self, method: str, path: str, **kw) -> Any:
         r = await self.client.request(method, path, **kw)
@@ -101,10 +110,14 @@ class Api:
     async def run(self, ctx: Context | None, op: str, params: dict, wait: bool, timeout: float,
                   return_preview: bool) -> list:
         params = {k: v for k, v in params.items() if v is not None}
-        job = await self.call("POST", "/api/jobs", json={"op": op, "params": params})
+        job = await self.call("POST", "/api/jobs", json={"op": op, "params": params, "source": "agent"})
+        if self.on_submit:
+            self.on_submit(ctx, job)
         if not wait:
-            return [json.dumps({"job_id": job["id"], "status": job["status"],
-                                "note": "Call get_job with this id to collect the result."})]
+            queued = [j for j in reversed(await self.call("GET", "/api/jobs")) if j["status"] in ("queued", "running")]
+            ahead = next((i for i, j in enumerate(queued) if j["id"] == job["id"]), 0)
+            return [json.dumps({"job_id": job["id"], "status": job["status"], "jobs_ahead": ahead,
+                                "note": "Call wait_for_jobs to be told when it finishes."})]
         return await self.finish(ctx, job["id"], timeout, return_preview)
 
     async def finish(self, ctx: Context | None, job_id: str, timeout: float, return_preview: bool) -> list:
@@ -155,9 +168,57 @@ def asset_summary(a: dict) -> dict:
     }
 
 
-def build_mcp() -> MCPServer:
-    mcp = MCPServer("Mozaic", instructions=INSTRUCTIONS, version="0.1.0")
+def job_line(j: dict) -> dict:
+    """A compact queue entry for list_jobs and wait_for_jobs."""
+    p = j.get("params") or {}
+    out = {"job_id": j["id"], "operation": j["op"], "status": j["status"], "source": j.get("source", "app")}
+    if p.get("prompt"):
+        out["prompt"] = p["prompt"][:160]
+    if p.get("model") == "moss":
+        out["model"] = "moss"
+    if j["status"] == "running":
+        out.update(progress=j["progress"], phase=j["phase"])
+    if j.get("error"):
+        out["error"] = j["error"]
+    if j.get("outputs"):
+        out["images"] = j["outputs"]
+    return out
+
+
+def build_mcp(channel: bool = False) -> MCPServer:
+    """channel: also push a Claude Code channel event when an agent's job finishes (stdio only)."""
+    mcp = MCPServer("Mozaic", instructions=INSTRUCTIONS + (CHANNEL_NOTE if channel else ""), version="0.1.0")
     api = Api()
+
+    if channel:
+        watched: set[str] = set()
+
+        async def announce(conn: Any, job_id: str) -> None:
+            job = await api.call("GET", f"/api/jobs/{job_id}")
+            while job["status"] in ("queued", "running"):
+                job = await api.call("GET", f"/api/jobs/{job_id}/wait", params={"timeout": 15})
+            p = job.get("params") or {}
+            what = f'{job["op"]}' + (f': "{p["prompt"][:120]}"' if p.get("prompt") else "")
+            if job["status"] == "done":
+                text = f"Mozaic finished {what}. Images: {', '.join(job['outputs'])}. Call get_job to review them."
+            else:
+                text = f"Mozaic job {what} ended as {job['status']}" + (f": {job['error']}" if job.get("error") else ".")
+            left = sum(1 for j in await api.call("GET", "/api/jobs") if j["status"] in ("queued", "running"))
+            try:
+                await conn.notify("notifications/claude/channel", {
+                    "content": text, "meta": {"job_id": job["id"], "status": job["status"], "jobs_left": str(left)}})
+            except Exception:
+                pass  # the client went away or doesn't listen for channel events
+
+        def on_submit(ctx: Context | None, job: dict) -> None:
+            # The session's connection outlives the tool call, so events can be pushed while the agent is idle.
+            conn = getattr(getattr(ctx, "session", None), "_connection", None) if ctx else None
+            if conn is None or job["id"] in watched or job["status"] not in ("queued", "running"):
+                return
+            watched.add(job["id"])
+            asyncio.get_running_loop().create_task(announce(conn.outbound, job["id"]))
+
+        api.on_submit = on_submit
 
     async def ids(refs: list[str] | None) -> list[str]:
         return [await api.image_id(r) for r in (refs or [])]
@@ -417,6 +478,49 @@ def build_mcp() -> MCPServer:
         return await api.describe_job(await api.call("GET", f"/api/jobs/{job_id}"), return_preview)
 
     @mcp.tool(structured_output=False)
+    async def list_jobs(include_finished: int = 10) -> list:
+        """The job queue: the running job, everything waiting in order, and the last few finished jobs.
+        source tells whether a job came from the person in the app or from an agent."""
+        jobs = await api.call("GET", "/api/jobs")
+        active = [job_line(j) for j in reversed(jobs) if j["status"] in ("queued", "running")]
+        done = [job_line(j) for j in jobs if j["status"] not in ("queued", "running")][:max(0, include_finished)]
+        return [json.dumps({"queue": active, "recently_finished": done}, indent=2)]
+
+    @mcp.tool(structured_output=False)
+    async def wait_for_jobs(job_ids: list[str] | None = None, all: bool = False, timeout: float = 1800,
+                            return_preview: bool = True, ctx: Context | None = None) -> list:
+        """Waits for queued jobs and returns their results with images, so you can review them.
+
+        job_ids: the jobs to wait for; by default every job that is queued or running now.
+        Returns as soon as one of them finishes (all=true: when every one has), and lists the rest as
+        still pending. Jobs among job_ids that already finished are returned at once. Call it again to
+        collect the next. If the timeout passes first, it returns with nothing finished."""
+        jobs = await api.call("GET", "/api/jobs")
+        active = {j["id"] for j in jobs if j["status"] in ("queued", "running")}
+        wanted = list(job_ids) if job_ids else [j["id"] for j in reversed(jobs) if j["id"] in active]
+        if not wanted:
+            return [json.dumps({"finished": [], "pending": [], "note": "Nothing is queued."})]
+        deadline = time.time() + timeout
+        while True:
+            states = {jid: await api.call("GET", f"/api/jobs/{jid}") for jid in wanted}
+            finished = [j for j in states.values() if j["status"] not in ("queued", "running")]
+            pending = [j for j in states.values() if j["status"] in ("queued", "running")]
+            if (finished and not all) or not pending or time.time() > deadline:
+                break
+            if ctx is not None:
+                try:
+                    await ctx.report_progress(len(finished), len(wanted), f"{len(pending)} jobs still running")
+                except Exception:
+                    pass
+            await api.call("GET", f"/api/jobs/{pending[0]['id']}/wait",
+                           params={"timeout": min(15, max(1, deadline - time.time()))})
+        out: list = [json.dumps({"finished": [job_line(j) for j in finished],
+                                 "pending": [job_line(j) for j in pending]}, indent=2)]
+        for j in finished:
+            out += (await api.describe_job(j, return_preview))[1:]
+        return out
+
+    @mcp.tool(structured_output=False)
     async def cancel_job(job_id: str) -> list:
         """Cancel a queued or running job."""
         return [json.dumps(await api.call("POST", f"/api/jobs/{job_id}/cancel"))]
@@ -484,9 +588,24 @@ def ensure_backend() -> None:
             return
 
 
+CHANNEL_NOTE = """
+When a job you queued finishes, Mozaic tells you with a <channel source="mozaic" job_id="..." status="...">
+event, even while you are idle. Review the images with get_job and queue any fixes."""
+
+
 def run_stdio() -> None:
     import logging
 
+    from mcp.server.stdio import stdio_server
+
     logging.getLogger("httpx").setLevel(logging.WARNING)
     ensure_backend()
-    asyncio.run(build_mcp().run_stdio_async())
+    server = build_mcp(channel=True)._lowlevel_server
+
+    async def main() -> None:
+        # Declaring claude/channel lets Claude Code sessions opted in to Mozaic's channel get job events.
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options(
+                experimental_capabilities={"claude/channel": {}}))
+
+    asyncio.run(main())

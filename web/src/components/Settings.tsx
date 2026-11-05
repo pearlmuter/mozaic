@@ -271,6 +271,10 @@ export function SettingsModal() {
               <CopyBlock text={claudeCode} />
               {claudeCodeStdio && <CopyBlock text={claudeCodeStdio} />}
               <span className="hint">The second form also works when Mozaic is closed: it starts a headless Mozaic that quits after 30 idle minutes.</span>
+              <span className="hint">
+                With the second form, Claude Code can also be told when jobs it queued finish, even while it is idle. Start it with{' '}
+                <code>claude --dangerously-load-development-channels server:mozaic</code> (channels are a Claude Code research preview).
+              </span>
             </div>
             {stdio.length > 0 && (
               <div className="field" style={{ marginTop: 10 }}>

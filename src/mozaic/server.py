@@ -291,7 +291,7 @@ def create_app(idle_exit: float = 0) -> FastAPI:
     @app.post("/api/jobs")
     async def submit(body: dict = Body(...)):
         try:
-            job = queue.submit(body.get("op", ""), body.get("params") or {})
+            job = queue.submit(body.get("op", ""), body.get("params") or {}, body.get("source") or "app")
         except ValueError as e:
             raise HTTPException(400, str(e))
         return job.public()

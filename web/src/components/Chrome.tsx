@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, Images, Loader2, Play, Search, Settings as Gear, Star, Square, X } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { AlertTriangle, Bot, Images, ListOrdered, Loader2, Play, Search, Settings as Gear, Star, Square, X } from 'lucide-react'
 import { api, thumbUrl, type Asset, type Job } from '../api'
 import { MODEL_NAMES, MODEL_TOOLS, useStore, type ModelId } from '../store'
 import { MozaicMark } from './Viewer'
-import { TOOL_ICONS, TOOL_NAMES } from './actions'
+import { OP_TOOL, TOOL_ICONS, TOOL_NAMES } from './actions'
 
 export function TopBar() {
   const engine = useStore((s) => s.engine)
@@ -15,6 +15,8 @@ export function TopBar() {
   const set = useStore((s) => s.set)
   const running = jobs.find((j) => j.status === 'running')
   const queued = jobs.filter((j) => j.status === 'queued').length
+  const waiting = queued + (running ? 1 : 0)
+  const queueOpen = useStore((s) => s.queueOpen)
 
   let state = 'starting'
   let text = 'Connecting…'
@@ -47,6 +49,12 @@ export function TopBar() {
         <span className="txt">{text}</span>
         {queued > 0 && <span className="kbd">+{queued} queued</span>}
       </div>
+      <div style={{ position: 'relative' }}>
+        <button className={`btn sm queue-toggle ${queueOpen ? 'on' : 'ghost'}`} title="Queue" onClick={() => set({ queueOpen: !queueOpen })}>
+          <ListOrdered size={15} /> Queue{waiting > 0 && <span className="count">{waiting}</span>}
+        </button>
+        {queueOpen && <QueuePanel />}
+      </div>
       {engine && !settingUp && (engine.state === 'stopped' || engine.state === 'error') && (
         <button className="btn sm" onClick={() => api.engine('start')}>
           <Play size={13} /> Start engine
@@ -56,6 +64,98 @@ export function TopBar() {
         <Gear size={16} />
       </button>
     </header>
+  )
+}
+
+/** What a job is, in the app's own words: the tool it came from and its prompt. */
+function jobTitle(j: Job) {
+  const tool = j.params.layout ? 'layout' : OP_TOOL[j.op]
+  return { tool, name: TOOL_NAMES[tool], prompt: j.params.prompt || j.params.subject || '' }
+}
+
+// Falls back to the tool icon when there is no picture yet, or its image has since been deleted.
+function QueueThumb({ src, icon }: { src?: string; icon: ReactNode }) {
+  const [failed, setFailed] = useState<string | null>(null)
+  return <div className="qthumb">{src && failed !== src ? <img src={src} alt="" onError={() => setFailed(src)} /> : icon}</div>
+}
+
+function QueuePanel() {
+  const jobs = useStore((s) => s.jobs)
+  const previews = useStore((s) => s.previews)
+  const set = useStore((s) => s.set)
+  const show = useStore((s) => s.show)
+  useEffect(() => {
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === 'Escape' : !(e.target as HTMLElement).closest('.queue-panel, .queue-toggle')) set({ queueOpen: false })
+    }
+    window.addEventListener('pointerdown', close)
+    window.addEventListener('keydown', close)
+    return () => (window.removeEventListener('pointerdown', close), window.removeEventListener('keydown', close))
+  }, [set])
+  // The server lists newest first; the queue reads in the order jobs will run.
+  const active = jobs.filter((j) => j.status === 'running' || j.status === 'queued').sort((a, b) => (a.status === 'running' ? -1 : b.status === 'running' ? 1 : a.created_at - b.created_at))
+  const done = jobs.filter((j) => j.status !== 'running' && j.status !== 'queued').slice(0, 8)
+  const waiting = active.filter((j) => j.status === 'queued')
+  const row = (j: Job, place?: number) => {
+    const t = jobTitle(j)
+    const thumb = j.status === 'running' ? previews[j.id] : j.outputs[0] ? thumbUrl(j.outputs[0]) : j.params.image || j.params.images?.[0] ? thumbUrl(j.params.image ?? j.params.images[0]) : undefined
+    const secs = j.started_at && j.finished_at ? Math.round(j.finished_at - j.started_at) : 0
+    const status =
+      j.status === 'running'
+        ? `${j.phase}${j.steps && j.phase === 'Generating' ? ` ${j.step}/${j.steps}` : ''}${j.count > 1 ? ` · image ${j.index + 1} of ${j.count}` : ''}`
+        : j.status === 'queued'
+          ? `Waiting · #${place}`
+          : j.status === 'done'
+            ? `Done · ${j.outputs.length} image${j.outputs.length === 1 ? '' : 's'}${secs ? ` · ${secs < 90 ? `${secs} s` : `${Math.round(secs / 60)} min`}` : ''}`
+            : j.status === 'error'
+              ? j.error || 'Failed'
+              : 'Cancelled'
+    const open = () => (j.status === 'done' && j.outputs[0] ? show(j.outputs[0]) : j.status === 'running' || j.status === 'queued' ? set({ live: j.id, view: 'studio' }) : null)
+    return (
+      <div key={j.id} className={`queue-row ${j.status}`} onClick={open}>
+        <QueueThumb src={thumb} icon={TOOL_ICONS[t.tool](16)} />
+        <div className="qtext">
+          <div className="qtitle">
+            {t.name}
+            {j.params.model === 'moss' && <span className="badge">MOSS</span>}
+            {j.source === 'agent' && (
+              <span className="badge" title="Queued by an AI agent over MCP">
+                <Bot size={11} /> Agent
+              </span>
+            )}
+          </div>
+          {t.prompt && <div className="qprompt">{t.prompt}</div>}
+          <div className={`qstatus ${j.status === 'error' ? 'err' : ''}`}>{status}</div>
+          {j.status === 'running' && (
+            <div className="bar">
+              <i style={{ width: `${Math.round(j.progress * 100)}%` }} />
+            </div>
+          )}
+        </div>
+        {(j.status === 'running' || j.status === 'queued') && (
+          <button className="btn sm ghost icon" title={j.status === 'running' ? 'Stop this job' : 'Remove from the queue'} onClick={(e) => (e.stopPropagation(), api.cancel(j.id))}>
+            <X size={14} />
+          </button>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div className="queue-panel">
+      <div className="queue-head">
+        <b>Queue</b>
+        <span className="hint">{active.length ? `${active.length} job${active.length === 1 ? '' : 's'}` : 'Nothing running'}</span>
+        {waiting.length > 1 && (
+          <button className="btn sm ghost" style={{ marginLeft: 'auto' }} onClick={() => waiting.forEach((j) => api.cancel(j.id))}>
+            Clear waiting
+          </button>
+        )}
+      </div>
+      {active.map((j, i) => row(j, active[0].status === 'running' ? i : i + 1))}
+      {!active.length && <div className="queue-empty hint">New jobs start right away. While one runs, the Generate button adds to the queue instead.</div>}
+      {done.length > 0 && <div className="queue-sub">Recent</div>}
+      {done.map((j) => row(j))}
+    </div>
   )
 }
 

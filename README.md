@@ -65,9 +65,17 @@ It only generates images (no editing), but it renders long text in English and C
 
 SFT is the polished fine-tune; Base is the rawer, less curated pretrained model.
 
+### The queue
+
+Jobs run one at a time. While one is running, the Generate button becomes **Add to queue**, so you can
+line up more images and edits while you wait, and the viewer stays on the job that's running. The
+**Queue** button in the top bar shows what's running, everything waiting in order, and recent
+results, with a cancel button on each job. Jobs queued by an AI agent wait in the same queue and are
+marked **Agent**. Crops and straightens skip the queue: they're instant.
+
 ### And also
 
-Live previews while Qwen samples, a queue with cancel, before/after compare, reuse any image's settings
+Live previews while Qwen samples, before/after compare, reuse any image's settings
 with the seed locked, a library you can star, search and filter, drag-and-drop or paste images anywhere,
 and LoRA support (anything in `models/loras`).
 
@@ -108,11 +116,30 @@ claude mcp add mozaic -- "$HOME/Library/Application Support/Mozaic/runtime/venv/
 
 **Tools:** `generate_image` (with `model`: `qwen` or `moss`), `generate_layout` (MOSS), `edit_image`,
 `edit_region`, `expand_image` (also crops and straightens), `remove_background`, `remix_image`,
-`get_job`, `cancel_job`, `list_images`, `get_image`, `import_image`, `set_favorite` and `mozaic_status`,
-plus a `mozaic://guide` resource with prompting tips.
+`list_jobs`, `wait_for_jobs`, `get_job`, `cancel_job`, `list_images`, `get_image`, `import_image`,
+`set_favorite` and `mozaic_status`, plus a `mozaic://guide` resource with prompting tips.
 
 Image arguments take a library id, an absolute path, a URL or a data URI. Tools wait for the result,
 sending progress notifications, and return file paths plus small previews.
+
+### Batches and overnight work
+
+An agent can queue many jobs at once by calling the tools with `wait: false`. Each call returns a job
+id and its place in the queue straight away. `wait_for_jobs` then returns as soon as the next job
+finishes, with its images, so the agent can review each result and queue fixes while the rest keep
+running. `list_jobs` shows the queue, and `cancel_job` removes one job from it.
+
+Over stdio, Mozaic can also tell an idle Claude Code session when a job it queued has finished, using
+Claude Code's [channels](https://code.claude.com/docs/en/channels) (a research preview). Start Claude
+Code with Mozaic's channel enabled (`mozaic` is the name you gave the server in `claude mcp add`):
+
+```bash
+claude --dangerously-load-development-channels server:mozaic
+```
+
+Each finished job then arrives in the session as a message with its job id, and Claude can pick up the
+images and carry on, even overnight. Without the flag, everything else works the same, and agents use
+`wait_for_jobs`.
 
 ## Where things live
 
